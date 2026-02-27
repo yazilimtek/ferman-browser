@@ -8,10 +8,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK4 REQUIRED gtk4)
 pkg_check_modules(WEBKIT REQUIRED webkitgtk-6.0)
+pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 
 set(SOURCES
     src/main.cpp
     src/browser_window.cpp
+    src/session_manager.cpp
+    src/download_manager.cpp
+    src/history_manager.cpp
+    src/bookmark_manager.cpp
+    src/settings_manager.cpp
 )
 
 add_executable(ferzan-browser ${SOURCES})
@@ -20,14 +26,17 @@ target_include_directories(ferzan-browser PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${GTK4_INCLUDE_DIRS}
     ${WEBKIT_INCLUDE_DIRS}
+    ${SQLITE3_INCLUDE_DIRS}
 )
 
 target_compile_options(ferzan-browser PRIVATE
     ${GTK4_CFLAGS_OTHER}
     ${WEBKIT_CFLAGS_OTHER}
+    ${SQLITE3_CFLAGS_OTHER}
 )
 
 target_link_libraries(ferzan-browser
     ${GTK4_LIBRARIES}
     ${WEBKIT_LIBRARIES}
+    ${SQLITE3_LIBRARIES}
 )

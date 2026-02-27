@@ -1,5 +1,10 @@
 #pragma once
 #include "tab.h"
+#include "session_manager.h"
+#include "history_manager.h"
+#include "bookmark_manager.h"
+#include "download_manager.h"
+#include "settings_manager.h"
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 #include <string>
@@ -35,7 +40,16 @@ private:
     bool  OnContextMenu(WebKitWebView* wv, WebKitContextMenu* menu, WebKitHitTestResult* hit);
     WebKitWebView* OnCreateWebView(WebKitWebView* wv, WebKitNavigationAction* action);
     void  OnPrint(WebKitWebView* wv, WebKitPrintOperation* op);
-    void  ShowSettingsWindow();
+    void  ShowSettingsPage();
+    void  UpdateFavButton();
+    void  ShowUrlSuggestions(const std::string& text);
+    void  HideUrlSuggestions();
+    void  RebuildBookmarksBar();
+    void  ToggleBookmarksBar();
+    std::string BuildSettingsHTML();
+    std::string BuildHistoryHTML();
+    std::string BuildAboutHTML();
+    void  HandleFerzanScheme(const std::string& uri);
 
     static void OnLoadChangedCb(WebKitWebView*, WebKitLoadEvent, gpointer);
     static void OnUriChangedCb(WebKitWebView*, GParamSpec*, gpointer);
@@ -56,17 +70,24 @@ private:
     static WebKitWebView* OnCreateWebViewCb(WebKitWebView*, WebKitNavigationAction*, gpointer);
     static gboolean OnPrintCb(WebKitWebView*, WebKitPrintOperation*, gpointer);
 
-    GtkWidget* window_       = nullptr;
-    GtkWidget* tab_box_      = nullptr;
-    GtkWidget* new_tab_btn_  = nullptr;
-    GtkWidget* stack_        = nullptr;
-    GtkWidget* url_entry_    = nullptr;
-    GtkWidget* back_btn_     = nullptr;
-    GtkWidget* fwd_btn_      = nullptr;
-    GtkWidget* reload_btn_   = nullptr;
-    GtkWidget* fav_btn_      = nullptr;
-    GtkWidget* status_bar_   = nullptr;
-    GtkWidget* menu_btn_     = nullptr;
+    GtkWidget* window_          = nullptr;
+    GtkWidget* tab_box_         = nullptr;
+    GtkWidget* new_tab_btn_     = nullptr;
+    GtkWidget* stack_           = nullptr;
+    GtkWidget* url_entry_       = nullptr;
+    GtkWidget* back_btn_        = nullptr;
+    GtkWidget* fwd_btn_         = nullptr;
+    GtkWidget* reload_btn_      = nullptr;
+    GtkWidget* fav_btn_         = nullptr;
+    GtkWidget* status_bar_      = nullptr;
+    GtkWidget* menu_btn_        = nullptr;
+    GtkWidget* download_btn_    = nullptr;
+    GtkWidget* suggest_pop_     = nullptr;
+    GtkWidget* suggest_list_    = nullptr;
+    GtkWidget* bookmarks_bar_   = nullptr;
+    GtkWidget* bookmarks_box_   = nullptr;
+    GtkWidget* zoom_box_        = nullptr;
+    bool       bookmarks_visible_ = false;
 
     GtkApplication*   app_         = nullptr;
     std::vector<Tab*> tabs_;

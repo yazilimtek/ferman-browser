@@ -1,4 +1,9 @@
 #include "browser_window.h"
+#include "session_manager.h"
+#include "history_manager.h"
+#include "bookmark_manager.h"
+#include "download_manager.h"
+#include "settings_manager.h"
 #include <algorithm>
 #include <string>
 #include <sstream>
@@ -87,6 +92,12 @@ static const char* kTabCSS = R"(
     background-color: alpha(@window_bg_color, 0.95);
     border-top: 1px solid alpha(@window_fg_color, 0.08);
 }
+.bookmarked {
+    color: #e6a817;
+}
+.bookmarked image {
+    color: #e6a817;
+}
 )";
 
 namespace ferzan {
@@ -100,16 +111,32 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_window_set_default_size(GTK_WINDOW(window_), 1280, 800);
     g_object_set_data(G_OBJECT(window_), "browser-window", this);
 
+    // ── Modülleri başlat (sadece ilk pencerede init edilir) ──
+    static bool modules_inited = false;
+    if (!modules_inited) {
+        modules_inited = true;
+        // Memory pressure: herhangi bir WebKitNetworkSession oluşturulmadan önce çağrılmalı
+        WebKitMemoryPressureSettings* mps = webkit_memory_pressure_settings_new();
+        webkit_memory_pressure_settings_set_memory_limit(mps, 512);
+        webkit_memory_pressure_settings_set_kill_threshold(mps, 0.95);
+        webkit_memory_pressure_settings_set_strict_threshold(mps, 0.80);
+        webkit_memory_pressure_settings_set_conservative_threshold(mps, 0.60);
+        webkit_network_session_set_memory_pressure_settings(mps);
+        webkit_memory_pressure_settings_free(mps);
+
+        const char* home = g_get_home_dir();
+        SessionManager::Get().Init();
+        std::string data_dir = std::string(home) + "/.local/share/ferzan-browser";
+        std::string cfg_dir  = std::string(home) + "/.config/ferzan-browser";
+        HistoryManager::Get().Init(data_dir + "/history.db");
+        BookmarkManager::Get().Init(data_dir + "/bookmarks.json");
+        SettingsManager::Get().Init(cfg_dir);
+    }
+
     // ── Header bar ──
     GtkWidget* header = gtk_header_bar_new();
     gtk_header_bar_set_show_title_buttons(GTK_HEADER_BAR(header), TRUE);
     gtk_window_set_titlebar(GTK_WINDOW(window_), header);
-
-    // Favicon DB etkinleştir
-    WebKitNetworkSession* net_session = webkit_network_session_get_default();
-    WebKitWebsiteDataManager* data_mgr =
-        webkit_network_session_get_website_data_manager(net_session);
-    webkit_website_data_manager_set_favicons_enabled(data_mgr, TRUE);
 
     // Nav butonları (sol)
     GtkWidget* nav_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -165,27 +192,25 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     g_menu_append_section(menu_model, "Gezinti", G_MENU_MODEL(nav_section));
     g_object_unref(nav_section);
 
-    // Görünüm bölümü
+    // Görünüm bölümü — zoom ikonları header bar'a taşındı, menüde kısayol satırı kaldı
     GMenu* view_section = g_menu_new();
-    g_menu_append(view_section,   "Yakınlaştır\t\t\tCtrl++",  "win.zoom-in");
-    g_menu_append(view_section,   "Uzaklaştır\t\t\tCtrl+-",  "win.zoom-out");
-    g_menu_append(view_section,   "Varsayılan Boyut\t\tCtrl+0", "win.zoom-reset");
     g_menu_append(view_section,   "Tam Ekran\t\t\tF11",       "win.fullscreen");
+    g_menu_append(view_section,   "Favoriler Barı",            "win.toggle-bookmarks-bar");
     g_menu_append_section(menu_model, "Görünüm", G_MENU_MODEL(view_section));
     g_object_unref(view_section);
 
     // Araçlar bölümü
     GMenu* tools_section = g_menu_new();
+    g_menu_append(tools_section,  "Geçmiş",                    "win.show-history");
     g_menu_append(tools_section,  "Sayfayı Kaydet\t\tCtrl+S",  "win.save-page");
     g_menu_append(tools_section,  "Sayfayı Yazdır\t\tCtrl+P",  "win.print-page");
     g_menu_append(tools_section,  "Geçmişi Temizle",            "win.clear-history");
     g_menu_append_section(menu_model, "Araçlar", G_MENU_MODEL(tools_section));
     g_object_unref(tools_section);
 
-    // Ayarlar / Hakkında
+    // Ayarlar
     GMenu* sys_section = g_menu_new();
-    g_menu_append(sys_section,    "Ayarlar",                  "win.settings");
-    g_menu_append(sys_section,    "Hakkında",                  "win.about");
+    g_menu_append(sys_section,    "Ayarlar",                   "win.settings");
     g_menu_append_section(menu_model, "", G_MENU_MODEL(sys_section));
     g_object_unref(sys_section);
 
@@ -196,7 +221,8 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
         {"reload"}, {"go-back"}, {"go-forward"}, {"go-home"},
         {"zoom-in"}, {"zoom-out"}, {"zoom-reset"},
         {"save-page"}, {"print-page"}, {"fullscreen"},
-        {"clear-history"}, {"settings"}, {"about"}
+        {"clear-history"}, {"settings"}, {"about"},
+        {"show-history"}, {"toggle-bookmarks-bar"}
     };
     for (auto& a : actions) {
         GSimpleAction* act = g_simple_action_new(a.name, nullptr);
@@ -222,6 +248,64 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     g_object_unref(menu_model);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), menu_btn_);
 
+    // Zoom butonları (büyüteç ikonları ile)
+    zoom_box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(zoom_box_, "linked");
+
+    GtkWidget* zoom_out_btn = gtk_button_new_from_icon_name("zoom-out-symbolic");
+    gtk_widget_add_css_class(zoom_out_btn, "flat");
+    gtk_widget_set_tooltip_text(zoom_out_btn, "Uzaklaştır (Ctrl+-)");
+    g_signal_connect(zoom_out_btn, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer ud) {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            if (self->active_tab_) {
+                auto* wv = WEBKIT_WEB_VIEW(self->active_tab_->webview);
+                webkit_web_view_set_zoom_level(wv,
+                    std::max(webkit_web_view_get_zoom_level(wv) - 0.1, 0.25));
+            }
+        }), this);
+
+    GtkWidget* zoom_reset_btn = gtk_button_new_with_label("100%");
+    gtk_widget_add_css_class(zoom_reset_btn, "flat");
+    gtk_widget_set_tooltip_text(zoom_reset_btn, "Varsayılan boyut (Ctrl+0)");
+    g_signal_connect(zoom_reset_btn, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer ud) {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            if (self->active_tab_)
+                webkit_web_view_set_zoom_level(
+                    WEBKIT_WEB_VIEW(self->active_tab_->webview), 1.0);
+        }), this);
+
+    GtkWidget* zoom_in_btn = gtk_button_new_from_icon_name("zoom-in-symbolic");
+    gtk_widget_add_css_class(zoom_in_btn, "flat");
+    gtk_widget_set_tooltip_text(zoom_in_btn, "Yakınlaştır (Ctrl++)");
+    g_signal_connect(zoom_in_btn, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer ud) {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            if (self->active_tab_) {
+                auto* wv = WEBKIT_WEB_VIEW(self->active_tab_->webview);
+                webkit_web_view_set_zoom_level(wv,
+                    std::min(webkit_web_view_get_zoom_level(wv) + 0.1, 5.0));
+            }
+        }), this);
+
+    gtk_box_append(GTK_BOX(zoom_box_), zoom_out_btn);
+    gtk_box_append(GTK_BOX(zoom_box_), zoom_reset_btn);
+    gtk_box_append(GTK_BOX(zoom_box_), zoom_in_btn);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), zoom_box_);
+
+    // İndirme butonu
+    DownloadManager::Get().Init(GTK_WINDOW(window_));
+    download_btn_ = DownloadManager::Get().GetPanelButton();
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), download_btn_);
+
+    // İndirme sinyali
+    WebKitNetworkSession* net_sess = SessionManager::Get().GetSession();
+    g_signal_connect(net_sess, "download-started",
+        G_CALLBACK(+[](WebKitNetworkSession*, WebKitDownload* dl, gpointer) {
+            DownloadManager::Get().OnDownloadStarted(dl);
+        }), nullptr);
+
     // ── İçerik alanı: URL bar + stack ──
     GtkWidget* content_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
@@ -246,9 +330,37 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_widget_set_tooltip_text(copy_btn, "Adresi kopyala");
     g_signal_connect(copy_btn, "clicked", G_CALLBACK(OnCopyUrlCb), this);
 
-    fav_btn_ = gtk_button_new_from_icon_name("bookmark-new-symbolic");
+    fav_btn_ = gtk_button_new_from_icon_name("non-starred-symbolic");
     gtk_widget_add_css_class(fav_btn_, "flat");
-    gtk_widget_set_tooltip_text(fav_btn_, "Favorilere ekle");
+    gtk_widget_set_tooltip_text(fav_btn_, "Favorilere ekle / kaldır");
+    g_signal_connect(fav_btn_, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer ud) {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            if (!self->active_tab_ || self->active_tab_->url.empty()) return;
+            const std::string& url = self->active_tab_->url;
+            if (BookmarkManager::Get().IsBookmarked(url))
+                BookmarkManager::Get().Remove(url);
+            else
+                BookmarkManager::Get().Add(url, self->active_tab_->title);
+            self->UpdateFavButton();
+            self->RebuildBookmarksBar();
+        }), this);
+
+    // URL autocomplete: sadece kullanıcı yazınca açılsın (programatik set_text tetiklemesin)
+    g_signal_connect(url_entry_, "changed",
+        G_CALLBACK(+[](GtkEditable* ed, gpointer ud) {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            // Focus yoksa (sayfa yükleme programatik seçimi) gizle
+            if (!gtk_widget_has_focus(GTK_WIDGET(ed))) {
+                self->HideUrlSuggestions();
+                return;
+            }
+            const char* txt = gtk_editable_get_text(ed);
+            if (txt && strlen(txt) >= 2)
+                self->ShowUrlSuggestions(txt);
+            else
+                self->HideUrlSuggestions();
+        }), this);
 
     GtkWidget* entry_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_widget_set_hexpand(entry_row, TRUE);
@@ -259,6 +371,27 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_box_append(GTK_BOX(url_bar), entry_row);
 
     gtk_box_append(GTK_BOX(content_box), url_bar);
+
+    // Favoriler barı (başlangıçta gizli)
+    bookmarks_bar_ = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(bookmarks_bar_),
+        GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(bookmarks_bar_), 200);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(bookmarks_bar_), FALSE);
+
+    GtkWidget* bbar_frame = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget* bbar_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_box_append(GTK_BOX(bbar_frame), bbar_sep);
+
+    bookmarks_box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_set_margin_start(bookmarks_box_, 6);
+    gtk_widget_set_margin_end(bookmarks_box_, 6);
+    gtk_widget_set_margin_top(bookmarks_box_, 3);
+    gtk_widget_set_margin_bottom(bookmarks_box_, 3);
+    gtk_box_append(GTK_BOX(bbar_frame), bookmarks_box_);
+    gtk_revealer_set_child(GTK_REVEALER(bookmarks_bar_), bbar_frame);
+    gtk_box_append(GTK_BOX(content_box), bookmarks_bar_);
+    RebuildBookmarksBar();
 
     // WebView stack
     stack_ = gtk_stack_new();
@@ -350,22 +483,26 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     tab->id   = next_tab_id_++;
     tab->url  = url;
 
-    // WebView
-    tab->webview = webkit_web_view_new();
+    // WebView — kalıcı network session ile
+    tab->webview = GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW,
+        "network-session", SessionManager::Get().GetSession(),
+        nullptr));
     WebKitSettings* wk_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(tab->webview));
     // Chrome UA — Google ve modern siteler için (tam platform bilgisi dahil)
     webkit_settings_set_user_agent(wk_settings,
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
-    webkit_settings_set_enable_javascript(wk_settings, TRUE);
+    const auto& prefs = SettingsManager::Get().Prefs();
+    webkit_settings_set_enable_javascript(wk_settings, prefs.javascript_enabled);
     webkit_settings_set_enable_media(wk_settings, TRUE);
     webkit_settings_set_javascript_can_open_windows_automatically(wk_settings, TRUE);
     webkit_settings_set_allow_modal_dialogs(wk_settings, TRUE);
     webkit_settings_set_enable_smooth_scrolling(wk_settings, FALSE);
     webkit_settings_set_media_playback_requires_user_gesture(wk_settings, FALSE);
-    // Donanım hızlandırma KAPALI — pointer event offset sorununu giderir
-    webkit_settings_set_hardware_acceleration_policy(
-        wk_settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+    webkit_settings_set_hardware_acceleration_policy(wk_settings,
+        prefs.hardware_accel
+            ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
+            : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
     gtk_widget_set_hexpand(tab->webview, TRUE);
     gtk_widget_set_vexpand(tab->webview, TRUE);
     g_object_set_data(G_OBJECT(tab->webview), "tab", tab);
@@ -403,11 +540,12 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     gtk_widget_set_hexpand(id_label, FALSE);
     gtk_widget_set_valign(id_label, GTK_ALIGN_CENTER);
 
-    // Favicon (başlangıçta generic ikon)
-    tab->favicon = gtk_image_new_from_icon_name("text-html-symbolic");
+    // Favicon (başlangıçta gizli — gerçek favicon gelince gösterilir)
+    tab->favicon = gtk_image_new();
     gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 16);
     gtk_widget_set_valign(tab->favicon, GTK_ALIGN_CENTER);
     gtk_widget_set_hexpand(tab->favicon, FALSE);
+    gtk_widget_set_visible(tab->favicon, FALSE);
 
     // Başlık etiketi
     tab->label = gtk_label_new("Yeni Sekme");
@@ -533,6 +671,7 @@ void BrowserWindow::SwitchToTab(Tab* tab) {
 
     UpdateUrlEntry();
     UpdateNavButtons();
+    UpdateFavButton();
 
     const char* title = webkit_web_view_get_title(WEBKIT_WEB_VIEW(tab->webview));
     std::string wt = title ? (std::string(title) + " — " + kAppName) : kAppName;
@@ -554,6 +693,90 @@ void BrowserWindow::UpdateUrlEntry() {
         gtk_editable_set_text(GTK_EDITABLE(url_entry_), "");
     else
         gtk_editable_set_text(GTK_EDITABLE(url_entry_), uri);
+}
+
+void BrowserWindow::UpdateFavButton() {
+    if (!fav_btn_ || !active_tab_) return;
+    bool bookmarked = BookmarkManager::Get().IsBookmarked(active_tab_->url);
+    gtk_button_set_icon_name(GTK_BUTTON(fav_btn_),
+        bookmarked ? "starred-symbolic" : "non-starred-symbolic");
+    if (bookmarked) {
+        gtk_widget_add_css_class(fav_btn_, "bookmarked");
+    } else {
+        gtk_widget_remove_css_class(fav_btn_, "bookmarked");
+    }
+}
+
+void BrowserWindow::ShowUrlSuggestions(const std::string& text) {
+    if (text.size() < 2) { HideUrlSuggestions(); return; }
+    auto results = HistoryManager::Get().Query(text, 8);
+    if (results.empty()) { HideUrlSuggestions(); return; }
+
+    if (!suggest_pop_) {
+        suggest_pop_ = gtk_popover_new();
+        gtk_popover_set_has_arrow(GTK_POPOVER(suggest_pop_), FALSE);
+        gtk_popover_set_autohide(GTK_POPOVER(suggest_pop_), FALSE);
+        gtk_widget_set_parent(suggest_pop_, url_entry_);
+        suggest_list_ = gtk_list_box_new();
+        gtk_list_box_set_selection_mode(GTK_LIST_BOX(suggest_list_), GTK_SELECTION_BROWSE);
+        gtk_widget_set_size_request(suggest_list_, 500, -1);
+        gtk_popover_set_child(GTK_POPOVER(suggest_pop_), suggest_list_);
+        g_signal_connect(suggest_list_, "row-activated",
+            G_CALLBACK(+[](GtkListBox*, GtkListBoxRow* row, gpointer ud) {
+                auto* self = static_cast<BrowserWindow*>(ud);
+                const char* url = static_cast<const char*>(
+                    g_object_get_data(G_OBJECT(row), "url"));
+                if (url && self->active_tab_) {
+                    webkit_web_view_load_uri(
+                        WEBKIT_WEB_VIEW(self->active_tab_->webview), url);
+                    self->HideUrlSuggestions();
+                }
+            }), this);
+    }
+
+    // Listeyi temizle
+    GtkWidget* child = gtk_widget_get_first_child(suggest_list_);
+    while (child) {
+        GtkWidget* next = gtk_widget_get_next_sibling(child);
+        gtk_list_box_remove(GTK_LIST_BOX(suggest_list_), child);
+        child = next;
+    }
+
+    for (const auto& e : results) {
+        GtkWidget* row_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_set_margin_start(row_box, 8);
+        gtk_widget_set_margin_end(row_box, 8);
+        gtk_widget_set_margin_top(row_box, 4);
+        gtk_widget_set_margin_bottom(row_box, 4);
+
+        GtkWidget* url_lbl = gtk_label_new(e.url.c_str());
+        gtk_label_set_ellipsize(GTK_LABEL(url_lbl), PANGO_ELLIPSIZE_MIDDLE);
+        gtk_widget_set_halign(url_lbl, GTK_ALIGN_START);
+        gtk_widget_add_css_class(url_lbl, "caption");
+
+        gtk_box_append(GTK_BOX(row_box), url_lbl);
+
+        if (!e.title.empty()) {
+            GtkWidget* title_lbl = gtk_label_new(e.title.c_str());
+            gtk_label_set_ellipsize(GTK_LABEL(title_lbl), PANGO_ELLIPSIZE_END);
+            gtk_widget_set_halign(title_lbl, GTK_ALIGN_START);
+            gtk_widget_add_css_class(title_lbl, "dim-label");
+            gtk_box_append(GTK_BOX(row_box), title_lbl);
+        }
+
+        GtkWidget* row = gtk_list_box_row_new();
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), row_box);
+        g_object_set_data_full(G_OBJECT(row), "url",
+            g_strdup(e.url.c_str()), g_free);
+        gtk_list_box_append(GTK_LIST_BOX(suggest_list_), row);
+    }
+
+    gtk_popover_popup(GTK_POPOVER(suggest_pop_));
+}
+
+void BrowserWindow::HideUrlSuggestions() {
+    if (suggest_pop_)
+        gtk_popover_popdown(GTK_POPOVER(suggest_pop_));
 }
 
 Tab* BrowserWindow::TabForWebView(WebKitWebView* wv) {
@@ -579,6 +802,17 @@ void BrowserWindow::OnLoadChanged(WebKitWebView* wv, WebKitLoadEvent event) {
     // Favicon yükleme bittikten sonra tekrar dene (ilk notify::favicon null dönebilir)
     if (event == WEBKIT_LOAD_FINISHED) {
         OnFaviconChanged(wv);
+        // Geçmişe kaydet
+        const char* uri   = webkit_web_view_get_uri(wv);
+        const char* title = webkit_web_view_get_title(wv);
+        if (uri && *uri &&
+            strncmp(uri, "ferzan://", 9) != 0 &&
+            strncmp(uri, "about:",   6) != 0) {
+            HistoryManager::Get().AddVisit(
+                uri, title ? title : "");
+        }
+        // Favori butonunu güncelle
+        UpdateFavButton();
     }
 }
 
@@ -588,7 +822,10 @@ void BrowserWindow::OnUriChanged(WebKitWebView* wv) {
     const char* uri = webkit_web_view_get_uri(wv);
     tab->url = uri ? uri : "";
     UpdateTabLabel(tab);
-    if (tab == active_tab_) UpdateUrlEntry();
+    if (tab == active_tab_) {
+        UpdateUrlEntry();
+        UpdateFavButton();
+    }
 }
 
 void BrowserWindow::UpdateTabLabel(Tab* tab) {
@@ -630,24 +867,27 @@ void BrowserWindow::OnFaviconChanged(WebKitWebView* wv) {
     Tab* tab = TabForWebView(wv);
     if (!tab || !tab->favicon) return;
 
-    // Önce webkit_web_view_get_favicon() dene (sync, cache'den gelir)
+    // Önce sync API'yi dene (cache'den gelir)
     GdkTexture* texture = webkit_web_view_get_favicon(wv);
     if (texture) {
         gtk_image_set_from_paintable(GTK_IMAGE(tab->favicon), GDK_PAINTABLE(texture));
         gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 16);
+        gtk_widget_set_visible(tab->favicon, TRUE);
         return;
     }
 
-    // Sync API null döndü — FaviconDatabase ile async sorgula
+    // Sync null — FaviconDatabase ile async sorgula
     const char* page_uri = webkit_web_view_get_uri(wv);
-    if (!page_uri || !*page_uri) return;
+    if (!page_uri || !*page_uri) {
+        gtk_widget_set_visible(tab->favicon, FALSE);
+        return;
+    }
 
-    WebKitNetworkSession* ns = webkit_network_session_get_default();
+    WebKitNetworkSession* ns = SessionManager::Get().GetSession();
     WebKitWebsiteDataManager* dm = webkit_network_session_get_website_data_manager(ns);
     WebKitFaviconDatabase* fdb = webkit_website_data_manager_get_favicon_database(dm);
-    if (!fdb) return;
+    if (!fdb) { gtk_widget_set_visible(tab->favicon, FALSE); return; }
 
-    // favicon_widget ve page_uri'yi callback için paket haline getir
     struct Ctx { GtkWidget* img; };
     auto* ctx = new Ctx{ tab->favicon };
     webkit_favicon_database_get_favicon(fdb, page_uri, nullptr,
@@ -656,32 +896,45 @@ void BrowserWindow::OnFaviconChanged(WebKitWebView* wv) {
             GError* err = nullptr;
             GdkTexture* tex = webkit_favicon_database_get_favicon_finish(
                 WEBKIT_FAVICON_DATABASE(src), res, &err);
-            if (tex && GTK_IS_IMAGE(ctx->img)) {
-                gtk_image_set_from_paintable(GTK_IMAGE(ctx->img), GDK_PAINTABLE(tex));
-                gtk_image_set_pixel_size(GTK_IMAGE(ctx->img), 16);
-                g_object_unref(tex);
+            if (GTK_IS_IMAGE(ctx->img)) {
+                if (tex) {
+                    gtk_image_set_from_paintable(GTK_IMAGE(ctx->img), GDK_PAINTABLE(tex));
+                    gtk_image_set_pixel_size(GTK_IMAGE(ctx->img), 16);
+                    gtk_widget_set_visible(ctx->img, TRUE);
+                    g_object_unref(tex);
+                } else {
+                    // favicon yok — gizle
+                    gtk_widget_set_visible(ctx->img, FALSE);
+                }
             }
             if (err) g_error_free(err);
             delete ctx;
         }, ctx);
 }
 
-void BrowserWindow::OnMouseTargetChanged(WebKitWebView* wv,
-                                          WebKitHitTestResult* hit) {
+void BrowserWindow::OnMouseTargetChanged(WebKitWebView* wv, WebKitHitTestResult* hit) {
     // Sadece aktif sekmenin hover bilgisini göster
     Tab* tab = TabForWebView(wv);
     if (!tab || tab != active_tab_) return;
 
-    if (webkit_hit_test_result_context_is_link(hit)) {
-        const char* link = webkit_hit_test_result_get_link_uri(hit);
-        if (link && *link) {
-            gtk_label_set_text(GTK_LABEL(status_bar_), link);
-            gtk_widget_set_visible(status_bar_, TRUE);
-            return;
+    const char* link_uri = webkit_hit_test_result_get_link_uri(hit);
+    if (status_bar_) {
+        gtk_label_set_text(GTK_LABEL(status_bar_), link_uri ? link_uri : "");
+    }
+    // DNS prefetch: hover'da hedef host'u önceden çöz
+    if (link_uri && *link_uri) {
+        const char* after_scheme = strstr(link_uri, "://");
+        if (after_scheme) {
+            after_scheme += 3;
+            std::string host;
+            while (*after_scheme && *after_scheme != '/' &&
+                   *after_scheme != ':' && *after_scheme != '?')
+                host += *after_scheme++;
+            if (!host.empty())
+                webkit_network_session_prefetch_dns(
+                    SessionManager::Get().GetSession(), host.c_str());
         }
     }
-    gtk_label_set_text(GTK_LABEL(status_bar_), "");
-    gtk_widget_set_visible(status_bar_, FALSE);
 }
 
 void BrowserWindow::OnUrlActivate() {
@@ -809,6 +1062,10 @@ void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud
             webkit_web_view_set_zoom_level(
                 WEBKIT_WEB_VIEW(self->active_tab_->webview), 1.0);
     }
+    else if (!g_strcmp0(name, "show-history"))
+        self->NewTab("ferzan://gecmis");
+    else if (!g_strcmp0(name, "toggle-bookmarks-bar"))
+        self->ToggleBookmarksBar();
     else if (!g_strcmp0(name, "clear-history")) {
         GtkAlertDialog* dlg = gtk_alert_dialog_new("Geçmişi temizle");
         gtk_alert_dialog_set_detail(dlg, "Çerezler ve geçmiş temizlensin mi?");
@@ -817,11 +1074,11 @@ void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud
         gtk_alert_dialog_set_cancel_button(dlg, 0);
         gtk_alert_dialog_set_default_button(dlg, 1);
         gtk_alert_dialog_choose(dlg, GTK_WINDOW(self->window_), nullptr,
-            [](GObject* src, GAsyncResult* res, gpointer ud) {
+            [](GObject* src, GAsyncResult* res, gpointer) {
                 int btn = gtk_alert_dialog_choose_finish(
                     GTK_ALERT_DIALOG(src), res, nullptr);
                 if (btn == 1) {
-                    WebKitNetworkSession* ns = webkit_network_session_get_default();
+                    WebKitNetworkSession* ns = SessionManager::Get().GetSession();
                     WebKitWebsiteDataManager* dm =
                         webkit_network_session_get_website_data_manager(ns);
                     webkit_website_data_manager_clear(dm,
@@ -831,6 +1088,7 @@ void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud
                             WEBKIT_WEBSITE_DATA_DISK_CACHE |
                             WEBKIT_WEBSITE_DATA_SESSION_STORAGE),
                         0, nullptr, nullptr, nullptr);
+                    HistoryManager::Get().Clear();
                 }
                 g_object_unref(src);
             }, nullptr);
@@ -902,16 +1160,8 @@ void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud
         else
             gtk_window_fullscreen(GTK_WINDOW(self->window_));
     }
-    else if (!g_strcmp0(name, "settings")) { self->ShowSettingsWindow(); }
-    else if (!g_strcmp0(name, "about")) {
-        GtkAlertDialog* dlg = gtk_alert_dialog_new("Ferzan Browser");
-        gtk_alert_dialog_set_detail(dlg,
-            "Sürüm: 0.2.0\n"
-            "Yapı: GTK4 + WebKitGTK 6.0\n"
-            "Lisans: MIT");
-        gtk_alert_dialog_show(dlg, GTK_WINDOW(self->window_));
-        g_object_unref(dlg);
-    }
+    else if (!g_strcmp0(name, "settings"))  self->NewTab("ferzan://ayarlar");
+    else if (!g_strcmp0(name, "about"))     self->NewTab("ferzan://ayarlar/hakkimizda");
 }
 
 // ── Yeni pencere aç ─────────────────────────────────────────────────────────
@@ -945,17 +1195,39 @@ void BrowserWindow::OpenInNewWindow(const std::string& url) {
 
 // ── Karar politikası: yeni pencere/sekme yönlendirmesi ───────────────────────
 
-bool BrowserWindow::OnDecidePolicy(WebKitWebView*,
+bool BrowserWindow::OnDecidePolicy(WebKitWebView* wv,
                                     WebKitPolicyDecision* dec,
                                     WebKitPolicyDecisionType type) {
     // NEW_WINDOW_ACTION: "create" sinyali zaten yeni sekme açıyor;
-    // burada ignore etmiyoruz — WebKit create sinyalini tetiklesin.
     if (type == WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION) {
         webkit_policy_decision_use(dec);
         return true;
     }
 
     if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) return false;
+
+    // ferzan:// dahili sayfaları intercept et
+    {
+        WebKitNavigationPolicyDecision* nd = WEBKIT_NAVIGATION_POLICY_DECISION(dec);
+        WebKitNavigationAction* na = webkit_navigation_policy_decision_get_navigation_action(nd);
+        WebKitURIRequest* req = webkit_navigation_action_get_request(na);
+        const char* req_uri = webkit_uri_request_get_uri(req);
+        if (req_uri && g_str_has_prefix(req_uri, "ferzan://") &&
+            !g_str_has_prefix(req_uri, "ferzan://home")) {
+            webkit_policy_decision_ignore(dec);
+            // idle'da çağır: tab yaratıldıktan sonra wv active_tab ile eşleşsin
+            struct Ctx { BrowserWindow* self; std::string uri; };
+            auto* ctx = new Ctx{ this, req_uri };
+            g_idle_add([](gpointer ud) -> gboolean {
+                auto* c = static_cast<Ctx*>(ud);
+                // TabForWebView ile doğru tabı bul
+                c->self->HandleFerzanScheme(c->uri);
+                delete c;
+                return G_SOURCE_REMOVE;
+            }, ctx);
+            return true;
+        }
+    }
 
     WebKitNavigationPolicyDecision* navdec = WEBKIT_NAVIGATION_POLICY_DECISION(dec);
     WebKitNavigationAction* action =
@@ -1174,131 +1446,307 @@ void BrowserWindow::OnPrint(WebKitWebView*, WebKitPrintOperation* op) {
     webkit_print_operation_run_dialog(op, GTK_WINDOW(window_));
 }
 
-// ── Ayarlar penceresi ────────────────────────────────────────────────
+// ── Dahili sayfa HTML oluşturucular ──────────────────────────────────
 
-void BrowserWindow::ShowSettingsWindow() {
-    GtkWidget* dlg = gtk_window_new();
-    gtk_window_set_title(GTK_WINDOW(dlg), "Tarayıcı Ayarları");
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 480, 520);
-    gtk_window_set_transient_for(GTK_WINDOW(dlg), GTK_WINDOW(window_));
-    gtk_window_set_modal(GTK_WINDOW(dlg), FALSE);
-    gtk_window_set_destroy_with_parent(GTK_WINDOW(dlg), TRUE);
+std::string BrowserWindow::BuildSettingsHTML() {
+    const auto& p = SettingsManager::Get().Prefs();
+    std::string hp = p.homepage;
+    int zoom = (int)(p.default_zoom * 100);
+    std::string js_chk  = p.javascript_enabled ? "checked" : "";
+    std::string hw_chk  = p.hardware_accel     ? "checked" : "";
+    return R"html(
+<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8">
+<title>Ferzan Ayarlar</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:#f5f5f5;color:#1a1a1a;min-height:100vh;display:flex}
+.sidebar{width:220px;background:#2c2c2c;color:#eee;padding:0;flex-shrink:0;
+display:flex;flex-direction:column}
+.sidebar h1{font-size:1rem;font-weight:700;padding:24px 20px 8px;
+color:#fff;letter-spacing:.5px}
+.sidebar nav a{display:block;padding:10px 20px;color:rgba(255,255,255,.7);
+text-decoration:none;font-size:.92rem;border-left:3px solid transparent;
+transition:all .15s}
+.sidebar nav a:hover,.sidebar nav a.active{background:rgba(255,255,255,.08);
+color:#fff;border-left-color:#4dabf7}
+.main{flex:1;padding:40px 48px;max-width:720px}
+.main h2{font-size:1.4rem;font-weight:700;margin-bottom:6px}
+.main .subtitle{color:#666;font-size:.88rem;margin-bottom:32px}
+.card{background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);
+padding:24px;margin-bottom:20px}
+.card h3{font-size:.8rem;font-weight:700;text-transform:uppercase;
+letter-spacing:.8px;color:#888;margin-bottom:16px}
+.row{display:flex;align-items:center;justify-content:space-between;
+padding:10px 0;border-bottom:1px solid #f0f0f0}
+.row:last-child{border-bottom:none}
+.row label{font-size:.95rem;color:#222}
+.row input[type=text]{border:1px solid #ddd;border-radius:6px;
+padding:7px 12px;font-size:.9rem;width:240px;outline:none;
+transition:border-color .15s}
+.row input[type=text]:focus{border-color:#4dabf7}
+.row input[type=number]{border:1px solid #ddd;border-radius:6px;
+padding:7px 10px;font-size:.9rem;width:80px;outline:none}
+.toggle{position:relative;width:44px;height:24px}
+.toggle input{opacity:0;width:0;height:0}
+.slider{position:absolute;inset:0;background:#ccc;border-radius:24px;
+transition:.3s;cursor:pointer}
+.slider:before{position:absolute;content:'';height:18px;width:18px;
+left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}
+input:checked+.slider{background:#4dabf7}
+input:checked+.slider:before{transform:translateX(20px)}
+.save-btn{background:#4dabf7;color:#fff;border:none;border-radius:8px;
+padding:10px 28px;font-size:.95rem;font-weight:600;cursor:pointer;
+transition:background .15s;margin-top:12px}
+.save-btn:hover{background:#339af0}
+.saved-msg{color:#40c057;font-size:.88rem;margin-left:12px;opacity:0;
+transition:opacity .3s}
+</style></head><body>
+<div class="sidebar">
+  <h1>⚙ Ayarlar</h1>
+  <nav>
+    <a href="ferzan://ayarlar" class="active">Genel</a>
+    <a href="ferzan://ayarlar/gizlilik">Gizlilik</a>
+    <a href="ferzan://ayarlar/hakkimizda">Hakkımızda</a>
+  </nav>
+</div>
+<div class="main">
+  <h2>Genel Ayarlar</h2>
+  <p class="subtitle">Tarayıcı davranışını ve görünümünü özelleştirin.</p>
 
-    GtkWidget* outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  <form onsubmit="save(event)">
+  <div class="card">
+    <h3>Başlangıç</h3>
+    <div class="row">
+      <label>Ana Sayfa</label>
+      <input type="text" id="homepage" value=")html" + hp + R"html(">
+    </div>
+  </div>
+  <div class="card">
+    <h3>Görünüm</h3>
+    <div class="row">
+      <label>Varsayılan Yakınlaştırma (%)</label>
+      <input type="number" id="zoom" min="25" max="500" step="25" value=")html" +
+        std::to_string(zoom) + R"html(">
+    </div>
+  </div>
+  <div class="card">
+    <h3>Performans</h3>
+    <div class="row">
+      <label>JavaScript</label>
+      <label class="toggle"><input type="checkbox" id="js" )html" + js_chk + R"html(>
+      <span class="slider"></span></label>
+    </div>
+    <div class="row">
+      <label>Donanım Hızlandırma</label>
+      <label class="toggle"><input type="checkbox" id="hw" )html" + hw_chk + R"html(>
+      <span class="slider"></span></label>
+    </div>
+  </div>
+  <button class="save-btn" type="submit">Kaydet</button>
+  <span class="saved-msg" id="ok">✓ Kaydedildi</span>
+  </form>
+</div>
+<script>
+function save(e){e.preventDefault();
+  var hp=document.getElementById('homepage').value;
+  var zoom=document.getElementById('zoom').value;
+  var js=document.getElementById('js').checked?1:0;
+  var hw=document.getElementById('hw').checked?1:0;
+  window.location.href='ferzan://ayarlar-kaydet?hp='+encodeURIComponent(hp)
+    +'&zoom='+zoom+'&js='+js+'&hw='+hw;
+  var ok=document.getElementById('ok');
+  ok.style.opacity=1;setTimeout(function(){ok.style.opacity=0;},2000);
+}
+</script></body></html>)html";
+}
 
-    // Başlık barı
-    GtkWidget* hdr = gtk_header_bar_new();
-    gtk_header_bar_set_title_widget(GTK_HEADER_BAR(hdr),
-        gtk_label_new("Tarayıcı Ayarları"));
-    gtk_header_bar_set_show_title_buttons(GTK_HEADER_BAR(hdr), TRUE);
-    gtk_window_set_titlebar(GTK_WINDOW(dlg), hdr);
+std::string BrowserWindow::BuildHistoryHTML() {
+    auto entries = HistoryManager::Get().Recent(200);
+    std::string rows;
+    for (auto& e : entries) {
+        std::string safe_url, safe_title;
+        for (char c : e.url)   { if(c=='<') safe_url+="&lt;"; else if(c=='>') safe_url+="&gt;"; else if(c=='&') safe_url+="&amp;"; else if(c=='"') safe_url+="&quot;"; else safe_url+=c; }
+        for (char c : e.title) { if(c=='<') safe_title+="&lt;"; else if(c=='>') safe_title+="&gt;"; else if(c=='&') safe_title+="&amp;"; else safe_title+=c; }
+        rows += "<div class='row'><a class='title' href='" + safe_url + "'>" +
+                (safe_title.empty() ? safe_url : safe_title) + "</a>" +
+                "<span class='url'>" + safe_url + "</span></div>\n";
+    }
+    if (rows.empty()) rows = "<p class='empty'>Henüz geçmiş yok.</p>";
+    return R"html(
+<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8">
+<title>Geçmiş</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:#f5f5f5;color:#1a1a1a;padding:40px 60px;max-width:900px;margin:0 auto}
+h1{font-size:1.6rem;font-weight:700;margin-bottom:6px}
+.subtitle{color:#888;font-size:.88rem;margin-bottom:28px}
+.card{background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}
+.row{display:flex;flex-direction:column;padding:12px 20px;
+border-bottom:1px solid #f0f0f0;transition:background .1s}
+.row:last-child{border-bottom:none}
+.row:hover{background:#f8f9fa}
+.title{font-size:.95rem;color:#2563eb;text-decoration:none;font-weight:500}
+.title:hover{text-decoration:underline}
+.url{font-size:.78rem;color:#aaa;margin-top:2px;overflow:hidden;
+text-overflow:ellipsis;white-space:nowrap}
+.empty{padding:40px;text-align:center;color:#aaa;font-size:1rem}
+.clear-btn{background:#fa5252;color:#fff;border:none;border-radius:8px;
+padding:9px 22px;font-size:.88rem;font-weight:600;cursor:pointer;margin-bottom:20px;float:right}
+</style></head><body>
+<h1>Geçmiş</h1>
+<p class="subtitle">Son ziyaret edilen sayfalar</p>
+<div class="card">
+)html" + rows + R"html(
+</div>
+</body></html>)html";
+}
 
-    // İçerik: kaydırılabilir
-    GtkWidget* scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
-        GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    gtk_widget_set_vexpand(scroll, TRUE);
+std::string BrowserWindow::BuildAboutHTML() {
+    return R"html(
+<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8">
+<title>Hakkımızda</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);
+min-height:100vh;display:flex;align-items:center;justify-content:center;color:#e0e0e0}
+.card{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);
+border-radius:20px;padding:52px 64px;text-align:center;max-width:540px;
+backdrop-filter:blur(10px)}
+.logo{font-size:3.2rem;font-weight:800;margin-bottom:6px;
+background:linear-gradient(90deg,#e94560,#4dabf7);
+-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.version{font-size:.92rem;color:rgba(255,255,255,.45);margin-bottom:36px}
+.badges{display:flex;gap:12px;justify-content:center;margin-bottom:36px;flex-wrap:wrap}
+.badge{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);
+border-radius:8px;padding:8px 18px;font-size:.82rem;color:rgba(255,255,255,.75)}
+.desc{font-size:.95rem;color:rgba(255,255,255,.6);line-height:1.7;margin-bottom:36px}
+.links{display:flex;gap:16px;justify-content:center}
+.link{color:#4dabf7;text-decoration:none;font-size:.88rem;border-bottom:1px solid rgba(77,171,247,.3);padding-bottom:2px}
+.link:hover{color:#74c0fc;border-bottom-color:#74c0fc}
+.copy{font-size:.78rem;color:rgba(255,255,255,.28);margin-top:32px}
+</style></head><body>
+<div class="card">
+  <div class="logo">Ferzan Browser</div>
+  <div class="version">Sürüm 0.3.0 — Şubat 2026</div>
+  <div class="badges">
+    <span class="badge">GTK4</span>
+    <span class="badge">WebKitGTK 6.0</span>
+    <span class="badge">C++17</span>
+    <span class="badge">SQLite3</span>
+  </div>
+  <p class="desc">Hızlı, hafif ve özgür bir masaüstü web tarayıcısı.<br>
+  Kalıcı oturum, akıllı önbellek, geçmiş, yer imleri<br>ve özelleştirilebilir ayarlar ile geliştirilmiştir.</p>
+  <div class="links">
+    <a class="link" href="https://github.com">Kaynak Kodu</a>
+    <a class="link" href="ferzan://ayarlar">Ayarlar</a>
+  </div>
+  <div class="copy">&copy; 2026 Ferzan Project — MIT Lisansı</div>
+</div>
+</body></html>)html";
+}
 
-    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_set_margin_start(vbox, 18);
-    gtk_widget_set_margin_end(vbox, 18);
-    gtk_widget_set_margin_top(vbox, 12);
-    gtk_widget_set_margin_bottom(vbox, 18);
+void BrowserWindow::ShowSettingsPage() {
+    NewTab("ferzan://ayarlar");
+}
 
-    // — Yardımcı lambda'lar —
-    auto make_section_label = [](const char* txt) {
-        GtkWidget* lbl = gtk_label_new(nullptr);
-        char* markup = g_strdup_printf("<b>%s</b>", txt);
-        gtk_label_set_markup(GTK_LABEL(lbl), markup);
-        g_free(markup);
-        gtk_widget_set_halign(lbl, GTK_ALIGN_START);
-        gtk_widget_set_margin_top(lbl, 18);
-        gtk_widget_set_margin_bottom(lbl, 6);
-        return lbl;
-    };
-    auto make_row = [](const char* label_txt, GtkWidget* control) {
-        GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-        gtk_widget_set_margin_top(row, 4);
-        gtk_widget_set_margin_bottom(row, 4);
-        GtkWidget* lbl = gtk_label_new(label_txt);
-        gtk_widget_set_hexpand(lbl, TRUE);
-        gtk_widget_set_halign(lbl, GTK_ALIGN_START);
-        gtk_box_append(GTK_BOX(row), lbl);
-        gtk_box_append(GTK_BOX(row), control);
-        return row;
-    };
+void BrowserWindow::RebuildBookmarksBar() {
+    if (!bookmarks_box_) return;
+    // Mevcut butonları temizle
+    GtkWidget* ch = gtk_widget_get_first_child(bookmarks_box_);
+    while (ch) {
+        GtkWidget* next = gtk_widget_get_next_sibling(ch);
+        gtk_box_remove(GTK_BOX(bookmarks_box_), ch);
+        ch = next;
+    }
+    const auto& bmarks = BookmarkManager::Get().All();
+    for (const auto& bm : bmarks) {
+        std::string label = bm.title.empty() ? bm.url : bm.title;
+        if (label.size() > 28) label = label.substr(0, 26) + "…";
+        GtkWidget* btn = gtk_button_new_with_label(label.c_str());
+        gtk_widget_add_css_class(btn, "flat");
+        gtk_widget_set_tooltip_text(btn, bm.url.c_str());
+        g_object_set_data_full(G_OBJECT(btn), "bm-url",
+            g_strdup(bm.url.c_str()), g_free);
+        g_signal_connect(btn, "clicked",
+            G_CALLBACK(+[](GtkButton* b, gpointer ud) {
+                auto* self = static_cast<BrowserWindow*>(ud);
+                const char* url = static_cast<const char*>(
+                    g_object_get_data(G_OBJECT(b), "bm-url"));
+                if (url && self->active_tab_)
+                    webkit_web_view_load_uri(
+                        WEBKIT_WEB_VIEW(self->active_tab_->webview), url);
+            }), this);
+        gtk_box_append(GTK_BOX(bookmarks_box_), btn);
+    }
+}
 
-    // ══ Genel ══
-    gtk_box_append(GTK_BOX(vbox), make_section_label("⛺ Genel"));
+void BrowserWindow::ToggleBookmarksBar() {
+    bookmarks_visible_ = !bookmarks_visible_;
+    gtk_revealer_set_reveal_child(
+        GTK_REVEALER(bookmarks_bar_), bookmarks_visible_);
+}
 
-    // Ana sayfa
-    GtkWidget* home_entry = gtk_entry_new();
-    gtk_editable_set_text(GTK_EDITABLE(home_entry), "ferzan://home");
-    gtk_widget_set_size_request(home_entry, 220, -1);
-    gtk_box_append(GTK_BOX(vbox), make_row("Ana Sayfa", home_entry));
+void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
+    if (!active_tab_) return;
+    auto* wv = WEBKIT_WEB_VIEW(active_tab_->webview);
+    std::string html;
+    std::string title;
 
-    // Arama motoru
-    GtkWidget* engine_combo = gtk_drop_down_new_from_strings(
-        (const char*[]){"Google", "DuckDuckGo", "Bing", "Yandex", nullptr});
-    gtk_box_append(GTK_BOX(vbox), make_row("Varsayılan Arama Motoru", engine_combo));
+    if (uri == "ferzan://ayarlar" || uri.rfind("ferzan://ayarlar?", 0) == 0) {
+        html  = BuildSettingsHTML();
+        title = "Ayarlar — Ferzan";
+    } else if (uri == "ferzan://ayarlar/hakkimizda") {
+        html  = BuildAboutHTML();
+        title = "Hakkımızda — Ferzan";
+    } else if (uri == "ferzan://gecmis") {
+        html  = BuildHistoryHTML();
+        title = "Geçmiş — Ferzan";
+    } else if (uri.rfind("ferzan://ayarlar-kaydet", 0) == 0) {
+        // Ayarları URL parametrelerinden oku ve kaydet
+        auto& prefs = SettingsManager::Get().Prefs();
+        auto parse_param = [&](const std::string& key) -> std::string {
+            std::string search = key + "=";
+            auto pos = uri.find(search);
+            if (pos == std::string::npos) return "";
+            pos += search.size();
+            auto end = uri.find('&', pos);
+            std::string encoded = (end == std::string::npos)
+                ? uri.substr(pos) : uri.substr(pos, end - pos);
+            // URL decode basit
+            std::string decoded;
+            for (size_t i = 0; i < encoded.size(); ++i) {
+                if (encoded[i] == '%' && i + 2 < encoded.size()) {
+                    int val;
+                    sscanf(encoded.substr(i+1,2).c_str(), "%x", &val);
+                    decoded += (char)val; i += 2;
+                } else if (encoded[i] == '+') {
+                    decoded += ' ';
+                } else {
+                    decoded += encoded[i];
+                }
+            }
+            return decoded;
+        };
+        std::string hp   = parse_param("hp");
+        std::string zoom = parse_param("zoom");
+        std::string js   = parse_param("js");
+        std::string hw   = parse_param("hw");
+        if (!hp.empty())   prefs.homepage           = hp;
+        if (!zoom.empty()) prefs.default_zoom        = std::stod(zoom) / 100.0;
+        if (!js.empty())   prefs.javascript_enabled  = (js == "1");
+        if (!hw.empty())   prefs.hardware_accel      = (hw == "1");
+        SettingsManager::Get().Save();
+        // Kayıt sonrası ayarlar sayfasına dön
+        webkit_web_view_load_uri(wv, "ferzan://ayarlar");
+        return;
+    } else {
+        return;  // bilinmeyen ferzan:// — zaten home tarafından handle ediliyor
+    }
 
-    // ══ Görünüm ══
-    gtk_box_append(GTK_BOX(vbox), make_section_label("🎨 Görünüm"));
-
-    GtkWidget* zoom_spin = gtk_spin_button_new_with_range(25, 500, 25);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(zoom_spin), 100);
-    gtk_box_append(GTK_BOX(vbox), make_row("Varsayılan Yakınlaştırma (%)", zoom_spin));
-
-    GtkWidget* fonts_btn = gtk_button_new_with_label("Yazı Tiplerini Düzenle...");
-    gtk_widget_add_css_class(fonts_btn, "flat");
-    gtk_widget_set_halign(fonts_btn, GTK_ALIGN_START);
-    gtk_box_append(GTK_BOX(vbox), fonts_btn);
-
-    // ══ Gizlilik ══
-    gtk_box_append(GTK_BOX(vbox), make_section_label("🔒 Gizlilik ve Güvenlik"));
-
-    GtkWidget* cookies_sw = gtk_switch_new();
-    gtk_switch_set_active(GTK_SWITCH(cookies_sw), TRUE);
-    gtk_box_append(GTK_BOX(vbox), make_row("Çerezlere İzin Ver", cookies_sw));
-
-    GtkWidget* js_sw = gtk_switch_new();
-    gtk_switch_set_active(GTK_SWITCH(js_sw), TRUE);
-    gtk_box_append(GTK_BOX(vbox), make_row("JavaScript", js_sw));
-
-    GtkWidget* webrtc_sw = gtk_switch_new();
-    gtk_switch_set_active(GTK_SWITCH(webrtc_sw), FALSE);
-    gtk_box_append(GTK_BOX(vbox), make_row("WebRTC", webrtc_sw));
-
-    GtkWidget* clear_btn2 = gtk_button_new_with_label("Çerezleri ve Geçmişi Temizle...");
-    gtk_widget_add_css_class(clear_btn2, "destructive-action");
-    gtk_widget_set_halign(clear_btn2, GTK_ALIGN_START);
-    gtk_widget_set_margin_top(clear_btn2, 8);
-    gtk_box_append(GTK_BOX(vbox), clear_btn2);
-
-    // ══ İndirmeler ══
-    gtk_box_append(GTK_BOX(vbox), make_section_label("📥 İndirmeler"));
-
-    GtkWidget* dl_path = gtk_entry_new();
-    gtk_editable_set_text(GTK_EDITABLE(dl_path), g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD) ? g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD) : "");
-    gtk_widget_set_size_request(dl_path, 220, -1);
-    gtk_box_append(GTK_BOX(vbox), make_row("İndirme Klasörü", dl_path));
-
-    GtkWidget* ask_dl_sw = gtk_switch_new();
-    gtk_switch_set_active(GTK_SWITCH(ask_dl_sw), TRUE);
-    gtk_box_append(GTK_BOX(vbox), make_row("İndirmeden Önce Sor", ask_dl_sw));
-
-    // ══ Hakkında ══
-    gtk_box_append(GTK_BOX(vbox), make_section_label("ℹ️ Hakkında"));
-    GtkWidget* ver_lbl = gtk_label_new(
-        "Ferzan Browser 0.2.0\nGTK4 + WebKitGTK 6.0\nLisans: MIT");
-    gtk_widget_set_halign(ver_lbl, GTK_ALIGN_START);
-    gtk_widget_add_css_class(ver_lbl, "dim-label");
-    gtk_box_append(GTK_BOX(vbox), ver_lbl);
-
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), vbox);
-    gtk_box_append(GTK_BOX(outer), scroll);
-    gtk_window_set_child(GTK_WINDOW(dlg), outer);
-    gtk_window_present(GTK_WINDOW(dlg));
+    webkit_web_view_load_html(wv, html.c_str(), nullptr);
+    active_tab_->title = title;
+    UpdateTabLabel(active_tab_);
+    gtk_window_set_title(GTK_WINDOW(window_), (title + " — " + kAppName).c_str());
 }
 
 // ── Static callback'ler (yeni) ───────────────────────────────────────────
