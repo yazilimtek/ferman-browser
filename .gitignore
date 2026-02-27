@@ -1,14 +1,35 @@
+# Build çıktıları
 build/
 .cache/
-*.log
-compile_commands.json
-.vscode/
-.idea/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
 ferzan-browser
+compile_commands.json
+
+# Derleme artefaktları
 *.o
 *.a
 *.so
+*.so.*
+*.d
+
+# Loglar
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CEF binary dağıtımı (büyük, indirilebilir — projeye dahil değil)
+# İndirme: https://cef-builds.spotifycdn.com/index.html
+third_party/
+
+# Geçici dosyalar
+*.tmp
+*.bak
