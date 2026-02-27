@@ -1,0 +1,14 @@
+build/
+.cache/
+*.log
+compile_commands.json
+.vscode/
+.idea/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+ferzan-browser
+*.o
+*.a
+*.so
