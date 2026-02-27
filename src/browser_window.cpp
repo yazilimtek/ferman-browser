@@ -62,15 +62,26 @@ else window.location.href='https://www.google.com/search?q='+encodeURIComponent(
 )html";
 
 static const char* kTabCSS = R"(
+.tab-row {
+    min-width: 80px;
+    max-width: 200px;
+    border-radius: 6px 6px 0 0;
+}
 .tab-active {
     background-color: alpha(@window_bg_color, 0.92);
-    border-radius: 6px 6px 0 0;
     box-shadow: inset 0 -2px 0 @accent_bg_color;
 }
-.tab-active label { color: @window_fg_color; font-weight: bold; }
-.tab-inactive { border-radius: 6px 6px 0 0; background-color: transparent; }
-.tab-inactive label { color: alpha(@window_fg_color, 0.55); font-weight: normal; }
+.tab-active > label, .tab-active label { color: @window_fg_color; font-weight: bold; }
+.tab-inactive { background-color: transparent; }
+.tab-inactive > label, .tab-inactive label { color: alpha(@window_fg_color, 0.55); font-weight: normal; }
 .tab-inactive:hover { background-color: alpha(@window_fg_color, 0.07); }
+.status-bar {
+    font-size: 0.75rem;
+    padding: 1px 8px;
+    color: alpha(@window_fg_color, 0.6);
+    background-color: alpha(@window_bg_color, 0.95);
+    border-top: 1px solid alpha(@window_fg_color, 0.08);
+}
 )";
 
 namespace ferzan {
@@ -166,6 +177,15 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_widget_set_vexpand(stack_, TRUE);
     gtk_box_append(GTK_BOX(content_box), stack_);
 
+    // Status bar (fare hover URL)
+    status_bar_ = gtk_label_new("");
+    gtk_label_set_ellipsize(GTK_LABEL(status_bar_), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(status_bar_), 0.0f);
+    gtk_widget_add_css_class(status_bar_, "status-bar");
+    gtk_widget_set_hexpand(status_bar_, TRUE);
+    gtk_widget_set_visible(status_bar_, FALSE);
+    gtk_box_append(GTK_BOX(content_box), status_bar_);
+
     gtk_window_set_child(GTK_WINDOW(window_), content_box);
 
     // ── Signals ──
@@ -197,16 +217,24 @@ Tab* BrowserWindow::NewTab(const std::string& url) {
     tab->id   = next_tab_id_++;
     tab->url  = url;
 
-    // WebView
+    // WebView — Chrome user-agent ile (Google Görseller uyumu)
     tab->webview = webkit_web_view_new();
+    WebKitSettings* wk_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(tab->webview));
+    webkit_settings_set_user_agent(wk_settings,
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    webkit_settings_set_enable_javascript(wk_settings, TRUE);
+    webkit_settings_set_enable_media(wk_settings, TRUE);
+    webkit_settings_set_javascript_can_open_windows_automatically(wk_settings, TRUE);
     gtk_widget_set_hexpand(tab->webview, TRUE);
     gtk_widget_set_vexpand(tab->webview, TRUE);
     g_object_set_data(G_OBJECT(tab->webview), "tab", tab);
 
-    g_signal_connect(tab->webview, "load-changed",    G_CALLBACK(OnLoadChangedCb),   this);
-    g_signal_connect(tab->webview, "notify::uri",     G_CALLBACK(OnUriChangedCb),    this);
-    g_signal_connect(tab->webview, "notify::title",   G_CALLBACK(OnTitleChangedCb),  this);
-    g_signal_connect(tab->webview, "notify::favicon", G_CALLBACK(OnFaviconChangedCb),this);
+    g_signal_connect(tab->webview, "load-changed",        G_CALLBACK(OnLoadChangedCb),        this);
+    g_signal_connect(tab->webview, "notify::uri",         G_CALLBACK(OnUriChangedCb),         this);
+    g_signal_connect(tab->webview, "notify::title",       G_CALLBACK(OnTitleChangedCb),       this);
+    g_signal_connect(tab->webview, "notify::favicon",     G_CALLBACK(OnFaviconChangedCb),     this);
+    g_signal_connect(tab->webview, "mouse-target-changed",G_CALLBACK(OnMouseTargetChangedCb), this);
 
     // Stack'e ekle
     std::string page_name = "tab_" + std::to_string(tab->id);
@@ -216,21 +244,28 @@ Tab* BrowserWindow::NewTab(const std::string& url) {
 
     // Tab satırı: favicon | #id başlık | kapat
     GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-    gtk_widget_set_margin_start(row, 6);
+    gtk_widget_add_css_class(row, "tab-row");
+    gtk_widget_set_margin_start(row, 4);
     gtk_widget_set_margin_end(row, 4);
     gtk_widget_set_margin_top(row, 3);
     gtk_widget_set_margin_bottom(row, 3);
+    // Sabit genişlik: min 80, max 200px — CSS ile de sınırlı
+    gtk_widget_set_size_request(row, 80, -1);
+    gtk_widget_set_hexpand(row, FALSE);
 
     // Favicon (başlangıçta generic ikon)
     tab->favicon = gtk_image_new_from_icon_name("text-html-symbolic");
-    gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 14);
+    gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 16);
     gtk_widget_set_valign(tab->favicon, GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(tab->favicon, FALSE);
+    gtk_widget_set_halign(tab->favicon, GTK_ALIGN_START);
 
     std::string init_label = "#" + std::to_string(tab->id) + " Yeni Sekme";
     tab->label = gtk_label_new(init_label.c_str());
-    gtk_label_set_max_width_chars(GTK_LABEL(tab->label), 18);
+    gtk_label_set_max_width_chars(GTK_LABEL(tab->label), 14);
     gtk_label_set_ellipsize(GTK_LABEL(tab->label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_hexpand(tab->label, TRUE);
+    gtk_widget_set_halign(tab->label, GTK_ALIGN_START);
 
     GtkWidget* close_btn = gtk_button_new_from_icon_name("window-close-symbolic");
     gtk_widget_add_css_class(close_btn, "flat");
@@ -388,6 +423,11 @@ void BrowserWindow::OnLoadChanged(WebKitWebView* wv, WebKitLoadEvent event) {
             loading ? "process-stop-symbolic" : "view-refresh-symbolic");
         UpdateNavButtons();
     }
+
+    // Favicon yükleme bittikten sonra tekrar dene (ilk notify::favicon null dönebilir)
+    if (event == WEBKIT_LOAD_FINISHED) {
+        OnFaviconChanged(wv);
+    }
 }
 
 void BrowserWindow::OnUriChanged(WebKitWebView* wv) {
@@ -444,9 +484,28 @@ void BrowserWindow::OnFaviconChanged(WebKitWebView* wv) {
         gtk_image_set_from_paintable(GTK_IMAGE(tab->favicon), GDK_PAINTABLE(texture));
         gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 16);
     } else {
+        // Texture henüz gelmedi — varsayılan ikon kalsın, sinyal tekrar gelince güncellenir
         gtk_image_set_from_icon_name(GTK_IMAGE(tab->favicon), "text-html-symbolic");
-        gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 14);
+        gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 16);
     }
+}
+
+void BrowserWindow::OnMouseTargetChanged(WebKitWebView* wv,
+                                          WebKitHitTestResult* hit) {
+    // Sadece aktif sekmenin hover bilgisini göster
+    Tab* tab = TabForWebView(wv);
+    if (!tab || tab != active_tab_) return;
+
+    if (webkit_hit_test_result_context_is_link(hit)) {
+        const char* link = webkit_hit_test_result_get_link_uri(hit);
+        if (link && *link) {
+            gtk_label_set_text(GTK_LABEL(status_bar_), link);
+            gtk_widget_set_visible(status_bar_, TRUE);
+            return;
+        }
+    }
+    gtk_label_set_text(GTK_LABEL(status_bar_), "");
+    gtk_widget_set_visible(status_bar_, FALSE);
 }
 
 void BrowserWindow::OnUrlActivate() {
@@ -536,6 +595,11 @@ void BrowserWindow::OnCopyUrlCb(GtkButton*, gpointer ud) {
 }
 void BrowserWindow::OnFaviconChangedCb(WebKitWebView* wv, GParamSpec*, gpointer ud) {
     static_cast<BrowserWindow*>(ud)->OnFaviconChanged(wv);
+}
+void BrowserWindow::OnMouseTargetChangedCb(WebKitWebView* wv,
+                                            WebKitHitTestResult* hit,
+                                            guint, gpointer ud) {
+    static_cast<BrowserWindow*>(ud)->OnMouseTargetChanged(wv, hit);
 }
 
 } // namespace ferzan

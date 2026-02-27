@@ -24,6 +24,7 @@ private:
     void  OnUriChanged(WebKitWebView* wv);
     void  OnTitleChanged(WebKitWebView* wv);
     void  OnFaviconChanged(WebKitWebView* wv);
+    void  OnMouseTargetChanged(WebKitWebView* wv, WebKitHitTestResult* hit);
     void  OnUrlActivate();
     void  OnBack();
     void  OnForward();
@@ -34,6 +35,7 @@ private:
     static void OnUriChangedCb(WebKitWebView*, GParamSpec*, gpointer);
     static void OnTitleChangedCb(WebKitWebView*, GParamSpec*, gpointer);
     static void OnFaviconChangedCb(WebKitWebView*, GParamSpec*, gpointer);
+    static void OnMouseTargetChangedCb(WebKitWebView*, WebKitHitTestResult*, guint, gpointer);
     static void OnBackCb(GtkButton*, gpointer);
     static void OnForwardCb(GtkButton*, gpointer);
     static void OnReloadCb(GtkButton*, gpointer);
@@ -51,6 +53,7 @@ private:
     GtkWidget* fwd_btn_      = nullptr;
     GtkWidget* reload_btn_   = nullptr;
     GtkWidget* fav_btn_      = nullptr;
+    GtkWidget* status_bar_   = nullptr;
 
     std::vector<Tab*> tabs_;
     Tab*              active_tab_ = nullptr;
