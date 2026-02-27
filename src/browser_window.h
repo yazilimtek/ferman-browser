@@ -43,6 +43,7 @@ private:
     static void OnNewTabCb(GtkButton*, gpointer);
     static void OnClearUrlCb(GtkButton*, gpointer);
     static void OnCopyUrlCb(GtkButton*, gpointer);
+    static void OnMenuActionCb(GSimpleAction*, GVariant*, gpointer);
 
     GtkWidget* window_       = nullptr;
     GtkWidget* tab_box_      = nullptr;
@@ -54,6 +55,7 @@ private:
     GtkWidget* reload_btn_   = nullptr;
     GtkWidget* fav_btn_      = nullptr;
     GtkWidget* status_bar_   = nullptr;
+    GtkWidget* menu_btn_     = nullptr;
 
     std::vector<Tab*> tabs_;
     Tab*              active_tab_ = nullptr;

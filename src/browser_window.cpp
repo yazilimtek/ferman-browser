@@ -75,6 +75,12 @@ static const char* kTabCSS = R"(
 .tab-inactive { background-color: transparent; }
 .tab-inactive > label, .tab-inactive label { color: alpha(@window_fg_color, 0.55); font-weight: normal; }
 .tab-inactive:hover { background-color: alpha(@window_fg_color, 0.07); }
+.tab-id-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    opacity: 0.55;
+    min-width: 20px;
+}
 .status-bar {
     font-size: 0.75rem;
     padding: 1px 8px;
@@ -97,6 +103,12 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     GtkWidget* header = gtk_header_bar_new();
     gtk_header_bar_set_show_title_buttons(GTK_HEADER_BAR(header), TRUE);
     gtk_window_set_titlebar(GTK_WINDOW(window_), header);
+
+    // Favicon DB etkinleştir
+    WebKitNetworkSession* net_session = webkit_network_session_get_default();
+    WebKitWebsiteDataManager* data_mgr =
+        webkit_network_session_get_website_data_manager(net_session);
+    webkit_website_data_manager_set_favicons_enabled(data_mgr, TRUE);
 
     // Nav butonları (sol)
     GtkWidget* nav_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -131,6 +143,52 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_box_append(GTK_BOX(title_area), tabs_scroll);
     gtk_box_append(GTK_BOX(title_area), new_tab_btn_);
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), title_area);
+
+    // ── Hamburger menü (sağ) ──
+    GMenu* menu_model = g_menu_new();
+
+    GMenu* nav_section = g_menu_new();
+    g_menu_append(nav_section, "Yeni Sekme",       "win.new-tab");
+    g_menu_append(nav_section, "Sayfayı Yenile",   "win.reload");
+    g_menu_append(nav_section, "Geri",             "win.go-back");
+    g_menu_append(nav_section, "İleri",            "win.go-forward");
+    g_menu_append_section(menu_model, "Gezinti", G_MENU_MODEL(nav_section));
+    g_object_unref(nav_section);
+
+    GMenu* tools_section = g_menu_new();
+    g_menu_append(tools_section, "Sayfayı Kaydet (Ctrl+S)",    "win.save-page");
+    g_menu_append(tools_section, "Sayfayı Yazdır (Ctrl+P)",    "win.print-page");
+    g_menu_append(tools_section, "Tam Ekran (F11)",            "win.fullscreen");
+    g_menu_append_section(menu_model, "Araçlar", G_MENU_MODEL(tools_section));
+    g_object_unref(tools_section);
+
+    GMenu* about_section = g_menu_new();
+    g_menu_append(about_section, "Ferzan Browser Hakkında", "win.about");
+    g_menu_append_section(menu_model, "", G_MENU_MODEL(about_section));
+    g_object_unref(about_section);
+
+    // GActionGroup — window actions
+    GSimpleActionGroup* ag = g_simple_action_group_new();
+    struct { const char* name; } actions[] = {
+        {"new-tab"}, {"reload"}, {"go-back"}, {"go-forward"},
+        {"save-page"}, {"print-page"}, {"fullscreen"}, {"about"}
+    };
+    for (auto& a : actions) {
+        GSimpleAction* act = g_simple_action_new(a.name, nullptr);
+        g_signal_connect(act, "activate", G_CALLBACK(OnMenuActionCb), this);
+        g_action_map_add_action(G_ACTION_MAP(ag), G_ACTION(act));
+        g_object_unref(act);
+    }
+    gtk_widget_insert_action_group(window_, "win", G_ACTION_GROUP(ag));
+    g_object_unref(ag);
+
+    menu_btn_ = gtk_menu_button_new();
+    gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(menu_btn_), "open-menu-symbolic");
+    gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(menu_btn_), G_MENU_MODEL(menu_model));
+    gtk_widget_add_css_class(menu_btn_, "flat");
+    gtk_widget_set_tooltip_text(menu_btn_, "Menü");
+    g_object_unref(menu_model);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), menu_btn_);
 
     // ── İçerik alanı: URL bar + stack ──
     GtkWidget* content_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -204,6 +262,44 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(css);
 
+    // ── Klavye kısayolları (Chromium benzeri) ──
+    GtkEventController* sc = gtk_shortcut_controller_new();
+    gtk_shortcut_controller_set_scope(GTK_SHORTCUT_CONTROLLER(sc), GTK_SHORTCUT_SCOPE_MANAGED);
+    auto add_shortcut = [&](const char* trigger_str, const char* action_str) {
+        GtkShortcut* s = gtk_shortcut_new(
+            gtk_shortcut_trigger_parse_string(trigger_str),
+            gtk_named_action_new(action_str));
+        gtk_shortcut_controller_add_shortcut(GTK_SHORTCUT_CONTROLLER(sc), s);
+    };
+    add_shortcut("<Control>t",   "win.new-tab");
+    add_shortcut("<Control>r",   "win.reload");
+    add_shortcut("F5",           "win.reload");
+    add_shortcut("<Alt>Left",    "win.go-back");
+    add_shortcut("<Alt>Right",   "win.go-forward");
+    add_shortcut("F11",          "win.fullscreen");
+    add_shortcut("<Control>p",   "win.print-page");
+    add_shortcut("<Control>s",   "win.save-page");
+    gtk_widget_add_controller(window_, sc);
+
+    // Ctrl+L: URL bar'a odaklan (GtkEntry direkt)
+    GtkEventController* key_ctrl = gtk_event_controller_key_new();
+    g_signal_connect(key_ctrl, "key-pressed",
+        G_CALLBACK(+[](GtkEventControllerKey*, guint keyval, guint,
+                       GdkModifierType state, gpointer ud) -> gboolean {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            if ((state & GDK_CONTROL_MASK) && keyval == GDK_KEY_l) {
+                gtk_widget_grab_focus(self->url_entry_);
+                gtk_editable_select_region(GTK_EDITABLE(self->url_entry_), 0, -1);
+                return TRUE;
+            }
+            if ((state & GDK_CONTROL_MASK) && keyval == GDK_KEY_w) {
+                if (self->active_tab_) self->CloseTab(self->active_tab_);
+                return TRUE;
+            }
+            return FALSE;
+        }), this);
+    gtk_widget_add_controller(window_, key_ctrl);
+
     // İlk tab (ana sayfa)
     NewTab(kHomePage);
 
@@ -217,15 +313,19 @@ Tab* BrowserWindow::NewTab(const std::string& url) {
     tab->id   = next_tab_id_++;
     tab->url  = url;
 
-    // WebView — Chrome user-agent ile (Google Görseller uyumu)
+    // WebView
     tab->webview = webkit_web_view_new();
     WebKitSettings* wk_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(tab->webview));
+    // Chrome UA — Google Görseller ve diğer modern siteler için
     webkit_settings_set_user_agent(wk_settings,
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
     webkit_settings_set_enable_javascript(wk_settings, TRUE);
     webkit_settings_set_enable_media(wk_settings, TRUE);
     webkit_settings_set_javascript_can_open_windows_automatically(wk_settings, TRUE);
+    // Donanım hızlandırma KAPALI — pointer event offset sorununu giderir
+    webkit_settings_set_hardware_acceleration_policy(
+        wk_settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
     gtk_widget_set_hexpand(tab->webview, TRUE);
     gtk_widget_set_vexpand(tab->webview, TRUE);
     g_object_set_data(G_OBJECT(tab->webview), "tab", tab);
@@ -242,27 +342,32 @@ Tab* BrowserWindow::NewTab(const std::string& url) {
     g_object_set_data(G_OBJECT(tab->webview), "page_name",
                       g_strdup(page_name.c_str()));
 
-    // Tab satırı: favicon | #id başlık | kapat
+    // Tab satırı: [#id] [favicon] [başlık] [kapat]
     GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_add_css_class(row, "tab-row");
     gtk_widget_set_margin_start(row, 4);
     gtk_widget_set_margin_end(row, 4);
     gtk_widget_set_margin_top(row, 3);
     gtk_widget_set_margin_bottom(row, 3);
-    // Sabit genişlik: min 80, max 200px — CSS ile de sınırlı
     gtk_widget_set_size_request(row, 80, -1);
     gtk_widget_set_hexpand(row, FALSE);
+
+    // #id etiketi (sabit, kısa)
+    std::string id_str = "#" + std::to_string(tab->id);
+    GtkWidget* id_label = gtk_label_new(id_str.c_str());
+    gtk_widget_add_css_class(id_label, "tab-id-label");
+    gtk_widget_set_hexpand(id_label, FALSE);
+    gtk_widget_set_valign(id_label, GTK_ALIGN_CENTER);
 
     // Favicon (başlangıçta generic ikon)
     tab->favicon = gtk_image_new_from_icon_name("text-html-symbolic");
     gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 16);
     gtk_widget_set_valign(tab->favicon, GTK_ALIGN_CENTER);
     gtk_widget_set_hexpand(tab->favicon, FALSE);
-    gtk_widget_set_halign(tab->favicon, GTK_ALIGN_START);
 
-    std::string init_label = "#" + std::to_string(tab->id) + " Yeni Sekme";
-    tab->label = gtk_label_new(init_label.c_str());
-    gtk_label_set_max_width_chars(GTK_LABEL(tab->label), 14);
+    // Başlık etiketi
+    tab->label = gtk_label_new("Yeni Sekme");
+    gtk_label_set_max_width_chars(GTK_LABEL(tab->label), 12);
     gtk_label_set_ellipsize(GTK_LABEL(tab->label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_hexpand(tab->label, TRUE);
     gtk_widget_set_halign(tab->label, GTK_ALIGN_START);
@@ -279,6 +384,7 @@ Tab* BrowserWindow::NewTab(const std::string& url) {
         self->CloseTab(t);
     }), this);
 
+    gtk_box_append(GTK_BOX(row), id_label);
     gtk_box_append(GTK_BOX(row), tab->favicon);
     gtk_box_append(GTK_BOX(row), tab->label);
     gtk_box_append(GTK_BOX(row), close_btn);
@@ -441,23 +547,21 @@ void BrowserWindow::OnUriChanged(WebKitWebView* wv) {
 
 void BrowserWindow::UpdateTabLabel(Tab* tab) {
     if (!tab || !tab->label) return;
-    std::string prefix = "#" + std::to_string(tab->id) + " ";
 
-    // Site adını URL'den çıkar (title yoksa hostname)
+    // Sadece başlık (id ayrı etiket, favicon ayrı widget)
     std::string display;
     if (!tab->title.empty()) {
-        display = prefix + tab->title;
+        display = tab->title;
     } else if (!tab->url.empty() && tab->url != kHomePage) {
-        // hostname çıkar
         std::string u = tab->url;
         auto s = u.find("://");
         if (s != std::string::npos) u = u.substr(s + 3);
         auto slash = u.find('/');
         if (slash != std::string::npos) u = u.substr(0, slash);
-        if (u.substr(0, 4) == "www.") u = u.substr(4);
-        display = prefix + u;
+        if (u.size() > 4 && u.substr(0, 4) == "www.") u = u.substr(4);
+        display = u;
     } else {
-        display = prefix + "Yeni Sekme";
+        display = "Yeni Sekme";
     }
     gtk_label_set_text(GTK_LABEL(tab->label), display.c_str());
 }
@@ -479,15 +583,41 @@ void BrowserWindow::OnTitleChanged(WebKitWebView* wv) {
 void BrowserWindow::OnFaviconChanged(WebKitWebView* wv) {
     Tab* tab = TabForWebView(wv);
     if (!tab || !tab->favicon) return;
+
+    // Önce webkit_web_view_get_favicon() dene (sync, cache'den gelir)
     GdkTexture* texture = webkit_web_view_get_favicon(wv);
     if (texture) {
         gtk_image_set_from_paintable(GTK_IMAGE(tab->favicon), GDK_PAINTABLE(texture));
         gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 16);
-    } else {
-        // Texture henüz gelmedi — varsayılan ikon kalsın, sinyal tekrar gelince güncellenir
-        gtk_image_set_from_icon_name(GTK_IMAGE(tab->favicon), "text-html-symbolic");
-        gtk_image_set_pixel_size(GTK_IMAGE(tab->favicon), 16);
+        return;
     }
+
+    // Sync API null döndü — FaviconDatabase ile async sorgula
+    const char* page_uri = webkit_web_view_get_uri(wv);
+    if (!page_uri || !*page_uri) return;
+
+    WebKitNetworkSession* ns = webkit_network_session_get_default();
+    WebKitWebsiteDataManager* dm = webkit_network_session_get_website_data_manager(ns);
+    WebKitFaviconDatabase* fdb = webkit_website_data_manager_get_favicon_database(dm);
+    if (!fdb) return;
+
+    // favicon_widget ve page_uri'yi callback için paket haline getir
+    struct Ctx { GtkWidget* img; };
+    auto* ctx = new Ctx{ tab->favicon };
+    webkit_favicon_database_get_favicon(fdb, page_uri, nullptr,
+        [](GObject* src, GAsyncResult* res, gpointer ud) {
+            auto* ctx = static_cast<Ctx*>(ud);
+            GError* err = nullptr;
+            GdkTexture* tex = webkit_favicon_database_get_favicon_finish(
+                WEBKIT_FAVICON_DATABASE(src), res, &err);
+            if (tex && GTK_IS_IMAGE(ctx->img)) {
+                gtk_image_set_from_paintable(GTK_IMAGE(ctx->img), GDK_PAINTABLE(tex));
+                gtk_image_set_pixel_size(GTK_IMAGE(ctx->img), 16);
+                g_object_unref(tex);
+            }
+            if (err) g_error_free(err);
+            delete ctx;
+        }, ctx);
 }
 
 void BrowserWindow::OnMouseTargetChanged(WebKitWebView* wv,
@@ -595,6 +725,30 @@ void BrowserWindow::OnCopyUrlCb(GtkButton*, gpointer ud) {
 }
 void BrowserWindow::OnFaviconChangedCb(WebKitWebView* wv, GParamSpec*, gpointer ud) {
     static_cast<BrowserWindow*>(ud)->OnFaviconChanged(wv);
+}
+void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud) {
+    auto* self = static_cast<BrowserWindow*>(ud);
+    const char* name = g_action_get_name(G_ACTION(action));
+    if      (!g_strcmp0(name, "new-tab"))    self->NewTab(self->kHomePage);
+    else if (!g_strcmp0(name, "reload"))     self->OnReload();
+    else if (!g_strcmp0(name, "go-back"))    self->OnBack();
+    else if (!g_strcmp0(name, "go-forward")) self->OnForward();
+    else if (!g_strcmp0(name, "fullscreen")) {
+        if (gtk_window_is_fullscreen(GTK_WINDOW(self->window_)))
+            gtk_window_unfullscreen(GTK_WINDOW(self->window_));
+        else
+            gtk_window_fullscreen(GTK_WINDOW(self->window_));
+    }
+    else if (!g_strcmp0(name, "about")) {
+        GtkAlertDialog* dlg = gtk_alert_dialog_new(
+            "Ferzan Browser");
+        gtk_alert_dialog_set_detail(dlg,
+            "Sürüm: 0.2.0\n"
+            "Yapı: GTK4 + WebKitGTK 6.0\n"
+            "Lisans: MIT");
+        gtk_alert_dialog_show(dlg, GTK_WINDOW(self->window_));
+        g_object_unref(dlg);
+    }
 }
 void BrowserWindow::OnMouseTargetChangedCb(WebKitWebView* wv,
                                             WebKitHitTestResult* hit,
