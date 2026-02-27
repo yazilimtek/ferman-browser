@@ -12,9 +12,10 @@ public:
     explicit BrowserWindow(GtkApplication* app);
 
 private:
-    Tab*  NewTab(const std::string& url);
+    Tab*  NewTab(const std::string& url, bool load = true, bool switch_to = true);
     void  CloseTab(Tab* tab);
     void  SwitchToTab(Tab* tab);
+    void  OpenInNewWindow(const std::string& url);
     void  UpdateNavButtons();
     void  UpdateUrlEntry();
     Tab*  TabForWebView(WebKitWebView* wv);
@@ -30,6 +31,11 @@ private:
     void  OnForward();
     void  OnReload();
     void  UpdateTabLabel(Tab* tab);
+    bool  OnDecidePolicy(WebKitWebView* wv, WebKitPolicyDecision* dec, WebKitPolicyDecisionType type);
+    bool  OnContextMenu(WebKitWebView* wv, WebKitContextMenu* menu, WebKitHitTestResult* hit);
+    WebKitWebView* OnCreateWebView(WebKitWebView* wv, WebKitNavigationAction* action);
+    void  OnPrint(WebKitWebView* wv, WebKitPrintOperation* op);
+    void  ShowSettingsWindow();
 
     static void OnLoadChangedCb(WebKitWebView*, WebKitLoadEvent, gpointer);
     static void OnUriChangedCb(WebKitWebView*, GParamSpec*, gpointer);
@@ -44,6 +50,11 @@ private:
     static void OnClearUrlCb(GtkButton*, gpointer);
     static void OnCopyUrlCb(GtkButton*, gpointer);
     static void OnMenuActionCb(GSimpleAction*, GVariant*, gpointer);
+    static void OnMenuActionWithParamCb(GSimpleAction*, GVariant*, gpointer);
+    static gboolean OnDecidePolicyCb(WebKitWebView*, WebKitPolicyDecision*, WebKitPolicyDecisionType, gpointer);
+    static gboolean OnContextMenuCb(WebKitWebView*, WebKitContextMenu*, WebKitHitTestResult*, gpointer);
+    static WebKitWebView* OnCreateWebViewCb(WebKitWebView*, WebKitNavigationAction*, gpointer);
+    static gboolean OnPrintCb(WebKitWebView*, WebKitPrintOperation*, gpointer);
 
     GtkWidget* window_       = nullptr;
     GtkWidget* tab_box_      = nullptr;
@@ -57,6 +68,7 @@ private:
     GtkWidget* status_bar_   = nullptr;
     GtkWidget* menu_btn_     = nullptr;
 
+    GtkApplication*   app_         = nullptr;
     std::vector<Tab*> tabs_;
     Tab*              active_tab_ = nullptr;
     int               next_tab_id_ = 1;
