@@ -22,13 +22,26 @@ bool BookmarkManager::IsBookmarked(const std::string& url) const {
     return false;
 }
 
-void BookmarkManager::Add(const std::string& url, const std::string& title) {
+void BookmarkManager::Add(const std::string& url, const std::string& title, const std::string& folder) {
     if (IsBookmarked(url)) return;
     Bookmark b;
     b.url      = url;
     b.title    = title;
+    b.folder   = folder;
     b.added_at = static_cast<int64_t>(time(nullptr));
     bookmarks_.push_back(b);
+    Save();
+}
+
+void BookmarkManager::Rename(const std::string& url, const std::string& new_title) {
+    for (auto& b : bookmarks_)
+        if (b.url == url) { b.title = new_title; break; }
+    Save();
+}
+
+void BookmarkManager::MoveToFolder(const std::string& url, const std::string& folder) {
+    for (auto& b : bookmarks_)
+        if (b.url == url) { b.folder = folder; break; }
     Save();
 }
 
@@ -77,6 +90,7 @@ void BookmarkManager::Save() {
         const auto& b = bookmarks_[i];
         f << "  {\"url\":\"" << JsonEscape(b.url)
           << "\",\"title\":\"" << JsonEscape(b.title)
+          << "\",\"folder\":\"" << JsonEscape(b.folder)
           << "\",\"added_at\":" << b.added_at << "}";
         if (i+1 < bookmarks_.size()) f << ",";
         f << "\n";
@@ -130,6 +144,7 @@ void BookmarkManager::Load() {
                     skip_ws();
                     if (key == "url")   b.url   = read_string();
                     else if (key == "title") b.title = read_string();
+                    else if (key == "folder") b.folder = read_string();
                     else if (key == "added_at") {
                         std::string num;
                         while (pos < content.size() && (isdigit(content[pos]) || content[pos] == '-'))

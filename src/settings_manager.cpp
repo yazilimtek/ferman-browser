@@ -48,6 +48,11 @@ void SettingsManager::Load() {
     settings_.javascript_enabled= get_bool("General", "javascript_enabled",settings_.javascript_enabled);
     settings_.hardware_accel    = get_bool("General", "hardware_accel",    settings_.hardware_accel);
     settings_.language          = get_str ("General", "language",          settings_.language);
+    settings_.search_engine     = get_str ("General", "search_engine",     settings_.search_engine);
+    settings_.download_dir       = get_str ("General", "download_dir",       settings_.download_dir);
+    settings_.history_days       = (int)get_dbl("General", "history_days",  (double)settings_.history_days);
+    settings_.max_tabs           = (int)get_dbl("General", "max_tabs",       (double)settings_.max_tabs);
+    settings_.restore_tabs       = get_bool("General", "restore_tabs",      settings_.restore_tabs);
 
     g_key_file_free(kf);
 }
@@ -59,6 +64,11 @@ void SettingsManager::Save() {
     g_key_file_set_boolean(kf, "General", "javascript_enabled",settings_.javascript_enabled);
     g_key_file_set_boolean(kf, "General", "hardware_accel",    settings_.hardware_accel);
     g_key_file_set_string (kf, "General", "language",          settings_.language.c_str());
+    g_key_file_set_string (kf, "General", "search_engine",     settings_.search_engine.c_str());
+    g_key_file_set_string (kf, "General", "download_dir",       settings_.download_dir.c_str());
+    g_key_file_set_double (kf, "General", "history_days",       (double)settings_.history_days);
+    g_key_file_set_double (kf, "General", "max_tabs",           (double)settings_.max_tabs);
+    g_key_file_set_boolean(kf, "General", "restore_tabs",       settings_.restore_tabs);
 
     GError* err = nullptr;
     if (!g_key_file_save_to_file(kf, filepath_.c_str(), &err)) {

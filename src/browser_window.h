@@ -46,7 +46,12 @@ private:
     void  HideUrlSuggestions();
     void  RebuildBookmarksBar();
     void  ToggleBookmarksBar();
-    std::string BuildSettingsHTML();
+    std::string BuildHomeHTML();
+    std::string BuildSettingsHTML(const std::string& page = "genel");
+    std::string BuildPrivacyHTML();
+    std::string BuildTabsSettingsHTML();
+    std::string BuildAppearanceSettingsHTML();
+    std::string BuildAdvancedSettingsHTML();
     std::string BuildHistoryHTML();
     std::string BuildAboutHTML();
     void  HandleFerzanScheme(const std::string& uri);
@@ -86,7 +91,7 @@ private:
     GtkWidget* suggest_list_    = nullptr;
     GtkWidget* bookmarks_bar_   = nullptr;
     GtkWidget* bookmarks_box_   = nullptr;
-    GtkWidget* zoom_box_        = nullptr;
+    GtkWidget* zoom_reset_btn_  = nullptr;
     bool       bookmarks_visible_ = false;
 
     GtkApplication*   app_         = nullptr;
