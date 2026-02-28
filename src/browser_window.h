@@ -5,6 +5,8 @@
 #include "bookmark_manager.h"
 #include "download_manager.h"
 #include "settings_manager.h"
+#include "ai_manager.h"
+#include "file_extractor.h"
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 #include <string>
@@ -55,6 +57,39 @@ private:
     std::string BuildHistoryHTML();
     std::string BuildAboutHTML();
     void  HandleFerzanScheme(const std::string& uri);
+    void  SaveTabSession();
+    void  RestoreTabSession();
+
+    // ── AI Panel ──
+    void  BuildAiPanel();
+    void  ToggleAiPanel();
+    void  ToggleAiHistory();
+    void  ToggleAiFilter();
+    void  RefreshAiChatList();
+    void  LoadAiChat(int64_t id);
+    void  SendAiMessage();
+    void  DoSendAiMessage(const std::string& input, const std::string& provider,
+                          const std::string& model, const std::string& api_key,
+                          const std::string& api_url);
+    void  AppendAiBubble(const std::string& role, const std::string& text);
+    void  ShowAiLoading(bool show);
+    void  AddAttachmentChip(const std::string& path);
+    std::string CollectAiInputText();
+    void  ParseAndHighlightTokens();
+    void  UpdateAiAgentCombo();
+    void  ShowAgentAutocomplete(const std::string& prefix);
+    void  HideAgentAutocomplete();
+    std::string BuildSettingsAiHTML();
+
+    static void OnAiSendCb(GtkButton*, gpointer);
+    static void OnAiNewChatCb(GtkButton*, gpointer);
+    static void OnAiToggleHistoryCb(GtkButton*, gpointer);
+    static void OnAiToggleFilterCb(GtkButton*, gpointer);
+    static void OnAiAttachCb(GtkButton*, gpointer);
+    static void OnAiSearchChangedCb(GtkSearchEntry*, gpointer);
+    static void OnAiDateFilterCb(GtkDropDown*, GParamSpec*, gpointer);
+    static void OnAiInputChangedCb(GtkTextBuffer*, gpointer);
+    static gboolean OnAiKeyPressCb(GtkEventControllerKey*, guint, guint, GdkModifierType, gpointer);
 
     static void OnLoadChangedCb(WebKitWebView*, WebKitLoadEvent, gpointer);
     static void OnUriChangedCb(WebKitWebView*, GParamSpec*, gpointer);
@@ -93,6 +128,32 @@ private:
     GtkWidget* bookmarks_box_   = nullptr;
     GtkWidget* zoom_reset_btn_  = nullptr;
     bool       bookmarks_visible_ = false;
+
+    // ── AI Panel widget'ları ──
+    GtkWidget* ai_btn_              = nullptr;  // URL bar'daki AI butonu
+    GtkWidget* ai_outer_            = nullptr;  // dış kapsayıcı (GtkBox yatay)
+    GtkWidget* ai_history_revealer_ = nullptr;  // sol sidebar revealer
+    GtkWidget* ai_filter_revealer_  = nullptr;  // filtre barı revealer
+    GtkWidget* ai_chat_list_        = nullptr;  // GtkListBox — sohbet listesi
+    GtkWidget* ai_search_entry_     = nullptr;  // arama kutusu
+    GtkWidget* ai_date_filter_      = nullptr;  // tarih dropdown
+    GtkWidget* ai_chat_box_         = nullptr;  // mesaj bubble kutusu
+    GtkWidget* ai_chat_scroll_      = nullptr;  // mesaj scroll
+    GtkWidget* ai_input_            = nullptr;  // GtkTextView
+    GtkWidget* ai_input_buffer_     = nullptr;  // GtkTextBuffer
+    GtkWidget* ai_title_label_      = nullptr;  // sohbet başlığı
+    GtkWidget* ai_attach_box_       = nullptr;  // dosya chip'leri
+    GtkWidget* ai_loading_label_    = nullptr;  // "..." göstergesi
+    GtkWidget* ai_history_btn_      = nullptr;  // ☰ toggle
+    GtkWidget* ai_agent_combo_      = nullptr;  // ajan seçim dropdown
+    GtkWidget* ai_autocomplete_pop_ = nullptr;  // @ autocomplete popover
+    GtkWidget* ai_autocomplete_list_= nullptr;  // autocomplete liste
+    bool       ai_panel_visible_    = false;
+    bool       ai_history_visible_  = false;
+    bool       ai_filter_visible_   = false;
+    int64_t    ai_current_chat_id_  = 0;
+    AiChat     ai_current_chat_;
+    std::vector<std::string> ai_attachments_;  // dosya yolları
 
     GtkApplication*   app_         = nullptr;
     std::vector<Tab*> tabs_;

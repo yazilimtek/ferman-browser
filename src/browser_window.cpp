@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <string>
 #include <sstream>
+#include <fstream>
 #include <cstdio>
+#include <ctime>
 #include <cctype>
 
 // kHomeHTML artık BuildHomeHTML() ile dinamik oluşturuluyor (arama motoru ayarına göre)
@@ -77,6 +79,8 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
         HistoryManager::Get().Init(data_dir + "/history.db");
         BookmarkManager::Get().Init(data_dir + "/bookmarks.json");
         SettingsManager::Get().Init(cfg_dir);
+        AiManager::Get().Init(data_dir);
+        AiAgentStore::Get().Init(cfg_dir);
     }
 
     // ── Header bar ──
@@ -361,6 +365,16 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_box_append(GTK_BOX(entry_row), clear_btn);
     gtk_box_append(GTK_BOX(entry_row), copy_btn);
     gtk_box_append(GTK_BOX(entry_row), fav_btn_);
+
+    // AI butonu
+    ai_btn_ = gtk_button_new_with_label("AI");
+    gtk_widget_add_css_class(ai_btn_, "ai-btn");
+    gtk_widget_set_tooltip_text(ai_btn_, "AI Asistan (Ctrl+Shift+A)");
+    g_signal_connect(ai_btn_, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer ud){
+            static_cast<BrowserWindow*>(ud)->ToggleAiPanel();
+        }), this);
+    gtk_box_append(GTK_BOX(entry_row), ai_btn_);
     gtk_box_append(GTK_BOX(url_bar), entry_row);
 
     gtk_box_append(GTK_BOX(content_box), url_bar);
@@ -391,7 +405,21 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_stack_set_transition_type(GTK_STACK(stack_), GTK_STACK_TRANSITION_TYPE_NONE);
     gtk_widget_set_hexpand(stack_, TRUE);
     gtk_widget_set_vexpand(stack_, TRUE);
-    gtk_box_append(GTK_BOX(content_box), stack_);
+
+    // AI panel’u oluştur
+    BuildAiPanel();
+
+    // Stack + AI outer yan yana (GtkPaned)
+    GtkWidget* main_paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_paned_set_start_child(GTK_PANED(main_paned), stack_);
+    gtk_paned_set_end_child(GTK_PANED(main_paned), ai_outer_);
+    gtk_paned_set_resize_start_child(GTK_PANED(main_paned), TRUE);
+    gtk_paned_set_resize_end_child(GTK_PANED(main_paned), FALSE);
+    gtk_paned_set_shrink_start_child(GTK_PANED(main_paned), FALSE);
+    gtk_paned_set_shrink_end_child(GTK_PANED(main_paned), FALSE);
+    gtk_widget_set_hexpand(main_paned, TRUE);
+    gtk_widget_set_vexpand(main_paned, TRUE);
+    gtk_box_append(GTK_BOX(content_box), main_paned);
 
     // Status bar (fare hover URL)
     status_bar_ = gtk_label_new("");
@@ -460,8 +488,24 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
         }), this);
     gtk_widget_add_controller(window_, key_ctrl);
 
-    // İlk tab (ana sayfa)
-    NewTab(kHomePage);
+    // Pencere kapanırken sekmeleri kaydet
+    g_signal_connect(window_, "close-request",
+        G_CALLBACK(+[](GtkWindow*, gpointer ud) -> gboolean {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            if (SettingsManager::Get().Prefs().restore_tabs)
+                self->SaveTabSession();
+            return FALSE; // pencereyi kapat
+        }), this);
+
+    // İlk tab: restore_tabs açıksa önceki sekmeleri yükle, yoksa ana sayfa
+    if (SettingsManager::Get().Prefs().restore_tabs) {
+        RestoreTabSession();
+        // Hiç sekme açılmadıysa (ilk çalıştırma veya boş session) ana sayfa aç
+        if (tabs_.empty())
+            NewTab(kHomePage);
+    } else {
+        NewTab(kHomePage);
+    }
 
     gtk_window_present(GTK_WINDOW(window_));
 }
@@ -487,7 +531,7 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     // Chrome UA — Google ve modern siteler için (tam platform bilgisi dahil)
     webkit_settings_set_user_agent(wk_settings,
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+        "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36");
     const auto& prefs = SettingsManager::Get().Prefs();
     webkit_settings_set_enable_javascript(wk_settings, prefs.javascript_enabled);
     webkit_settings_set_enable_media(wk_settings, TRUE);
@@ -1116,7 +1160,7 @@ void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud
         self->ToggleBookmarksBar();
     else if (!g_strcmp0(name, "clear-history")) {
         GtkAlertDialog* dlg = gtk_alert_dialog_new("Geçmişi temizle");
-        gtk_alert_dialog_set_detail(dlg, "Çerezler ve geçmiş temizlensin mi?");
+        gtk_alert_dialog_set_detail(dlg, "Tarama geçmişi ve önbellek temizlensin mi? Oturum bilgileri (çerezler) korunur.");
         const char* btns[] = { "İptal", "Temizle", nullptr };
         gtk_alert_dialog_set_buttons(dlg, btns);
         gtk_alert_dialog_set_cancel_button(dlg, 0);
@@ -1131,10 +1175,8 @@ void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud
                         webkit_network_session_get_website_data_manager(ns);
                     webkit_website_data_manager_clear(dm,
                         static_cast<WebKitWebsiteDataTypes>(
-                            WEBKIT_WEBSITE_DATA_COOKIES |
                             WEBKIT_WEBSITE_DATA_MEMORY_CACHE |
-                            WEBKIT_WEBSITE_DATA_DISK_CACHE |
-                            WEBKIT_WEBSITE_DATA_SESSION_STORAGE),
+                            WEBKIT_WEBSITE_DATA_DISK_CACHE),
                         0, nullptr, nullptr, nullptr);
                     HistoryManager::Get().Clear();
                 }
@@ -1384,7 +1426,7 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
     WebKitSettings* wk_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(new_wv));
     webkit_settings_set_user_agent(wk_settings,
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+        "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36");
     webkit_settings_set_enable_javascript(wk_settings, TRUE);
     webkit_settings_set_enable_media(wk_settings, TRUE);
     webkit_settings_set_javascript_can_open_windows_automatically(wk_settings, TRUE);
@@ -1643,8 +1685,9 @@ static std::string SettingsSidebarNav(const std::string& active) {
         "<a href=\"ferzan://ayarlar/genel\""     + a("genel")     + ">🔧 Genel</a>"
         "<a href=\"ferzan://ayarlar/gorunum\""    + a("gorunum")   + ">🎨 Görünüm</a>"
         "<a href=\"ferzan://ayarlar/sekmeler\""   + a("sekmeler")  + ">📑 Sekmeler</a>"
-        "<a href=\"ferzan://ayarlar/gizlilik\""   + a("gizlilik")  + ">🔒 Gizlilik</a>"
-        "<a href=\"ferzan://ayarlar/gelismis\""   + a("gelismis")  + ">⚙ Gelişmiş</a>"
+        "<a href=\"ferzan://ayarlar/gizlilik\""   + a("gizlilik")   + ">🔒 Gizlilik</a>"
+        "<a href=\"ferzan://ayarlar/gelismis\""   + a("gelismis")   + ">⚙ Gelişmiş</a>"
+        "<a href=\"ferzan://ayarlar/yapay-zeka\"" + a("yapay-zeka") + ">🤖 Yapay Zeka</a>"
         "<div class=\"divider\"></div>"
         "<a href=\"ferzan://ayarlar/hakkimizda\"" + a("hakkimizda") + ">ℹ Hakkımızda</a>";
 }
@@ -2208,9 +2251,9 @@ std::string BrowserWindow::BuildAdvancedSettingsHTML() {
     <div class="row" style="flex-direction:column;align-items:flex-start;gap:8px">
       <label>Tarayıcı Kimliği (User-Agent)</label>
       <input type="text" id="ua" style="width:100%"
-        value="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        value="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
         readonly style="background:#f5f5f5;color:#888;cursor:not-allowed">
-      <span style="font-size:.78rem;color:#aaa">Chrome 131 kimliği kullanılıyor (değiştirilemez).</span>
+      <span style="font-size:.78rem;color:#aaa">Chrome 146 kimliği kullanılıyor (değiştirilemez).</span>
     </div>
   </div>
   <button class="save-btn" type="submit">💾 Kaydet</button>
@@ -2247,6 +2290,179 @@ function saveAdv(e){
 }
 </script>
 </body></html>)html";
+}
+
+std::string BrowserWindow::BuildSettingsAiHTML() {
+    const auto& agents = AiAgentStore::Get().Agents();
+
+    std::string css = SettingsSidebarCSS();
+    css +=
+        ".agent-tbl{width:100%;border-collapse:collapse;font-size:.85rem}"
+        ".agent-tbl th{text-align:left;padding:8px 10px;border-bottom:2px solid #e8e8e8;color:#555;font-weight:600}"
+        ".agent-tbl td{padding:7px 10px;border-bottom:1px solid #f2f2f2;vertical-align:middle}"
+        ".agent-tbl tr:hover td{background:#f5f9ff}"
+        ".badge{display:inline-block;padding:2px 8px;border-radius:99px;font-size:.72rem;font-weight:600}"
+        ".b-openai{background:#d4edda;color:#155724}"
+        ".b-anthropic{background:#fff3cd;color:#856404}"
+        ".b-deepseek{background:#cce5ff;color:#004085}"
+        ".b-groq{background:#f8d7da;color:#721c24}"
+        ".b-openrouter{background:#e2d9f3;color:#432874}"
+        ".b-other{background:#e8e8e8;color:#555}"
+        ".row-btns{display:flex;gap:5px}"
+        ".ebtn{background:#f0f0f0;border:1px solid #d5d5d5;border-radius:5px;"
+        "padding:3px 10px;font-size:.78rem;cursor:pointer;color:#333}"
+        ".ebtn:hover{background:#ddeeff;border-color:#aad0f5;color:#1a6fcc}"
+        ".dbtn{background:#fff0f0;border:1px solid #fcc;border-radius:5px;"
+        "padding:3px 10px;font-size:.78rem;cursor:pointer;color:#c00}"
+        ".dbtn:hover{background:#fdd}"
+        ".fcard{background:#fafafa;border:1px solid #e5e5e5;border-radius:10px;"
+        "padding:18px 20px;margin-top:14px}"
+        ".fcard h3{margin:0 0 14px;font-size:.93rem;color:#333}"
+        ".fr{display:flex;flex-direction:column;gap:4px;margin-bottom:11px}"
+        ".fr label{font-size:.81rem;color:#555;font-weight:500}"
+        ".fr input{padding:7px 10px;border:1px solid #d0d0d0;border-radius:6px;"
+        "font-size:.87rem;color:#222;background:#fff}"
+        ".fr input:focus{outline:none;border-color:#7ab0f0;box-shadow:0 0 0 2px #ddeeff}"
+        ".fr .hint{font-size:.74rem;color:#aaa;margin-top:2px}"
+        ".tipbox{background:#f5f9ff;border:1px solid #d8eaff;border-radius:8px;padding:12px 16px;margin-top:12px}"
+        ".tipbox code{background:#e8f0fe;padding:1px 5px;border-radius:3px;font-size:.82rem}";
+
+    std::string html;
+    html  = "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"UTF-8\">";
+    html += "<title>Yapay Zeka \xe2\x80\x94 Ayarlar</title><style>" + css + "</style></head><body>\n";
+    html += "<div class=\"sidebar\"><h1>\xe2\x9a\x99 Ayarlar</h1><nav>";
+    html += SettingsSidebarNav("yapay-zeka");
+    html += "</nav></div>\n<div class=\"main\">\n";
+    html += "<h2>Yapay Zeka Ajanlar\xc4\xb1</h2>\n";
+    html += "<p class=\"subtitle\">Her ajan kendi API anahtarı ve modeliyle çalışır. "
+            "Provider, API anahtarından otomatik belirlenir.</p>\n";
+
+    // Ajan tablosu
+    html += "<div class=\"card\" style=\"padding:0;overflow:hidden\">\n";
+    if (agents.empty()) {
+        html += "<p style=\"padding:18px;color:#aaa;font-size:.88rem\">"
+                "Henüz ajan eklenmemiş. Aşağıdaki formdan ekleyebilirsiniz.</p>\n";
+    } else {
+        html += "<table class=\"agent-tbl\"><thead><tr>"
+                "<th>Ajan \xc4\xb0smi</th><th>Provider</th><th>Model</th><th>API URL</th><th></th>"
+                "</tr></thead><tbody>\n";
+        for (const auto& a : agents) {
+            std::string prov = AiAgent::DetectProvider(a.api_key);
+            std::string bc = "b-other";
+            if      (prov == "openai")     bc = "b-openai";
+            else if (prov == "anthropic")  bc = "b-anthropic";
+            else if (prov == "deepseek")   bc = "b-deepseek";
+            else if (prov == "groq")       bc = "b-groq";
+            else if (prov == "openrouter") bc = "b-openrouter";
+            std::string url_disp = a.api_url.empty()
+                ? "<span style=\"color:#bbb\">varsay\xc4\xb1lan</span>" : a.api_url;
+            html += "<tr>"
+                    "<td><strong>" + a.name + "</strong></td>"
+                    "<td><span class=\"badge " + bc + "\">" + prov + "</span></td>"
+                    "<td><code style=\"font-size:.79rem\">" + a.model + "</code></td>"
+                    "<td style=\"font-size:.78rem;color:#888\">" + url_disp + "</td>"
+                    "<td><div class=\"row-btns\">"
+                    "<button class=\"ebtn\" onclick=\"editAgent('" + a.id + "','"
+                        + a.name + "','" + a.model + "','" + a.api_url + "')\">D\xc3\xbczenle</button>"
+                    "<button class=\"dbtn\" onclick=\"delAgent('" + a.id + "')\">Sil</button>"
+                    "</div></td></tr>\n";
+        }
+        html += "</tbody></table>\n";
+    }
+    html += "</div>\n";
+
+    // Ekle/Düzenle formu
+    html += "<div class=\"fcard\" id=\"aform\">\n"
+            "<h3 id=\"ftitle\">Yeni Ajan Ekle</h3>\n"
+            "<input type=\"hidden\" id=\"aid\" value=\"\">\n"
+            "<div class=\"fr\"><label>Ajan \xc4\xb0smi</label>"
+            "<input id=\"aname\" placeholder=\"Örn: Benim GPT Asistanım\"></div>\n"
+            "<div class=\"fr\"><label>API Anahtarı</label>"
+            "<input type=\"password\" id=\"akey\" autocomplete=\"off\" "
+            "placeholder=\"sk-...  /  sk-ant-...  /  ds-...\" oninput=\"detectProv(this.value)\">"
+            "<span class=\"hint\" id=\"pdet\">Provider: otomatik belirlenecek</span></div>\n"
+            "<div class=\"fr\"><label>Model</label>"
+            "<input id=\"amodel\" placeholder=\"gpt-4o, deepseek-chat, claude-3-5-sonnet-20241022\"></div>\n"
+            "<div class=\"fr\"><label>API URL "
+            "<span style=\"font-size:.74rem;color:#bbb\">(isteğe bağlı, "
+            "boşsa varsayılan endpoint kullanılır)</span></label>"
+            "<input id=\"aurl\" placeholder=\"https://...\"></div>\n"
+            "<div style=\"display:flex;gap:8px;margin-top:6px\">"
+            "<button class=\"save-btn\" onclick=\"saveAgent()\">Kaydet</button>"
+            "<button type=\"button\" style=\"background:#f0f0f0;border:1px solid #d5d5d5;"
+            "border-radius:7px;padding:6px 14px;cursor:pointer;font-size:.85rem\" "
+            "onclick=\"resetForm()\">Temizle</button>"
+            "</div>\n</div>\n";
+
+    // Token ipuçları
+    html += "<div class=\"tipbox\">\n"
+            "<strong style=\"font-size:.85rem;color:#1a6fcc\">Token İpuçları</strong>\n"
+            "<ul style=\"margin:6px 0 0;padding-left:18px;font-size:.83rem;color:#555;line-height:1.9\">\n"
+            "<li><code>@ajan-ismi</code> \xe2\x80\x94 sohbette ajan seç</li>\n"
+            "<li><code>#1</code> \xe2\x80\x94 sekme #1 URL içeriğini dahil et</li>\n"
+            "<li><code>*5</code> \xe2\x80\x94 sohbet #5'i bağlam olarak ekle</li>\n"
+            "<li>\xf0\x9f\x93\x8e butonu ile PDF, DOCX, XLSX, resim ekleyebilirsiniz</li>\n"
+            "</ul>\n</div>\n";
+
+    // Toast + Script
+    html += "<div id=\"toast\" style=\"position:fixed;bottom:24px;right:24px;z-index:9999;"
+            "background:#222;color:#fff;padding:11px 18px;border-radius:8px;"
+            "box-shadow:0 3px 16px rgba(0,0,0,.18);font-size:.85rem;"
+            "display:flex;align-items:center;gap:9px;opacity:0;transform:translateY(8px);"
+            "transition:opacity .22s,transform .22s;pointer-events:none\">"
+            "<span id=\"ti\">\xe2\x9c\x93</span><span id=\"tm\">Kaydedildi.</span></div>\n";
+    html += "<script>\n"
+        "function detectProv(k){\n"
+        "  var p='deepseek';\n"
+        "  if(k.indexOf('sk-ant-')===0)p='anthropic';\n"
+        "  else if(k.indexOf('sk-or-')===0)p='openrouter';\n"
+        "  else if(k.indexOf('gsk_')===0)p='groq';\n"
+        "  else if(k.indexOf('ds-')===0)p='deepseek';\n"
+        "  else if(k.indexOf('sk-')===0)p='openai';\n"
+        "  document.getElementById('pdet').textContent='Provider: '+p;\n"
+        "}\n"
+        "function toast(msg,ok){\n"
+        "  var t=document.getElementById('toast');\n"
+        "  document.getElementById('ti').textContent=ok?'\\u2713':'\\u2717';\n"
+        "  document.getElementById('tm').textContent=msg;\n"
+        "  t.style.opacity='1';t.style.transform='translateY(0)';\n"
+        "  setTimeout(function(){t.style.opacity='0';t.style.transform='translateY(8px)';},2600);\n"
+        "}\n"
+        "function saveAgent(){\n"
+        "  var id=document.getElementById('aid').value;\n"
+        "  var name=document.getElementById('aname').value.trim();\n"
+        "  var key=document.getElementById('akey').value.trim();\n"
+        "  var model=document.getElementById('amodel').value.trim();\n"
+        "  var url=document.getElementById('aurl').value.trim();\n"
+        "  if(!name){toast('Ajan ismi gerekli!',false);return;}\n"
+        "  window.location.href='ferzan://ai-ajan-kaydet'"
+        "    +'?id='+encodeURIComponent(id)"
+        "    +'&name='+encodeURIComponent(name)"
+        "    +'&key='+encodeURIComponent(key)"
+        "    +'&model='+encodeURIComponent(model)"
+        "    +'&url='+encodeURIComponent(url);\n"
+        "}\n"
+        "function editAgent(id,name,model,url){\n"
+        "  document.getElementById('aid').value=id;\n"
+        "  document.getElementById('aname').value=name;\n"
+        "  document.getElementById('akey').value='';\n"
+        "  document.getElementById('amodel').value=model;\n"
+        "  document.getElementById('aurl').value=url;\n"
+        "  document.getElementById('ftitle').textContent='Ajan D\\u00fczenle';\n"
+        "  document.getElementById('aform').scrollIntoView({behavior:'smooth'});\n"
+        "}\n"
+        "function delAgent(id){\n"
+        "  if(confirm('Bu ajan\\u0131 silmek istedi\\u011finizden emin misiniz?'))\n"
+        "    window.location.href='ferzan://ai-ajan-sil?id='+encodeURIComponent(id);\n"
+        "}\n"
+        "function resetForm(){\n"
+        "  ['aid','aname','akey','amodel','aurl'].forEach(function(x){"
+        "document.getElementById(x).value='';});\n"
+        "  document.getElementById('pdet').textContent='Provider: otomatik belirlenecek';\n"
+        "  document.getElementById('ftitle').textContent='Yeni Ajan Ekle';\n"
+        "}\n"
+        "</script>\n</div></body></html>";
+    return html;
 }
 
 void BrowserWindow::ShowSettingsPage() {
@@ -2426,6 +2642,1268 @@ void BrowserWindow::ToggleBookmarksBar() {
         GTK_REVEALER(bookmarks_bar_), bookmarks_visible_);
 }
 
+// ── AI Panel CSS ──────────────────────────────────────────────────────────────
+static const char* kAiCSS = R"css(
+.ai-btn{background:#f0f0f0;color:#333;border:1px solid #d0d0d0;
+border-radius:6px;font-weight:600;font-size:.82rem;padding:2px 10px;margin-left:4px}
+.ai-btn:hover{background:#e4e4e4}
+.ai-btn.suggested-action{background:#ddeeff;color:#1a6fcc;border-color:#aad0f5}
+.ai-panel{background:#ffffff;border-left:1px solid #e0e0e0}
+.ai-history-panel{background:#f8f8f8;border-right:1px solid #e0e0e0;min-width:230px}
+.ai-history-item{padding:8px 12px;border-bottom:1px solid #efefef;color:#333;font-size:.83rem}
+.ai-history-item:hover{background:#eef4ff}
+.ai-history-item.selected{background:#ddeeff}
+.ai-history-title{font-weight:600;font-size:.83rem;color:#222}
+.ai-history-date{font-size:.72rem;color:#999;margin-top:2px}
+.ai-bubble-user{background:#ddeeff;border-radius:14px 14px 4px 14px;
+padding:9px 14px;margin:4px 8px 4px 48px;color:#1a3a5c;font-size:.88rem;line-height:1.5}
+.ai-bubble-ai{background:#f3f3f3;border-radius:14px 14px 14px 4px;
+padding:9px 14px;margin:4px 48px 4px 8px;color:#222;font-size:.88rem;line-height:1.5}
+.ai-input-area{background:#fafafa;border-top:1px solid #e0e0e0;padding:8px}
+.ai-input-view{background:#fff;border:1px solid #d0d0d0;border-radius:8px;
+color:#222;font-size:.88rem;padding:6px;caret-color:#333}
+.ai-input-view text{color:#222}
+.ai-send-btn{background:#1a6fcc;color:#fff;border:none;border-radius:7px;
+font-weight:600;padding:6px 16px;font-size:.84rem}
+.ai-send-btn:hover{background:#155bb5}
+.ai-header{background:#f5f5f5;padding:7px 10px;border-bottom:1px solid #e0e0e0}
+.ai-title-lbl{color:#333;font-weight:700;font-size:.88rem}
+.ai-chip{background:#e8f0fe;color:#1a4fa0;border:1px solid #c5d8fc;
+border-radius:12px;padding:2px 8px;font-size:.78rem;margin:2px}
+.ai-chip-remove{background:transparent;border:none;color:#999;
+font-size:.75rem;padding:0 3px;min-width:0;border-radius:99px}
+.ai-chip-remove:hover{background:#fde8e8;color:#c00}
+.ai-filter-bar{background:#f8f8f8;padding:6px 8px;border-bottom:1px solid #e0e0e0}
+.ai-loading{color:#888;font-size:.84rem;font-style:italic;padding:6px 12px}
+.ai-new-chat-btn{background:#fff;color:#1a6fcc;border:1px solid #c5d8fc;
+border-radius:7px;font-size:.82rem;padding:4px 12px}
+.ai-new-chat-btn:hover{background:#eef4ff}
+.ai-combo-name{font-size:.86rem;font-weight:600;color:#222}
+.ai-combo-sub{font-size:.72rem;color:#999;margin-top:0}
+)css";
+
+void BrowserWindow::BuildAiPanel() {
+    GtkCssProvider* ai_css = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(ai_css, kAiCSS);
+    gtk_style_context_add_provider_for_display(gdk_display_get_default(),
+        GTK_STYLE_PROVIDER(ai_css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(ai_css);
+
+    ai_outer_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_visible(ai_outer_, FALSE);
+
+    // ── [A] Geçmiş sidebar ──
+    ai_history_revealer_ = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(ai_history_revealer_),
+        GTK_REVEALER_TRANSITION_TYPE_SLIDE_RIGHT);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(ai_history_revealer_), 200);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(ai_history_revealer_), FALSE);
+
+    GtkWidget* hist_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(hist_box, "ai-history-panel");
+
+    GtkWidget* hist_toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_set_margin_start(hist_toolbar, 8);
+    gtk_widget_set_margin_end(hist_toolbar, 8);
+    gtk_widget_set_margin_top(hist_toolbar, 8);
+    gtk_widget_set_margin_bottom(hist_toolbar, 8);
+
+    GtkWidget* new_chat_btn = gtk_button_new_with_label("✏ Yeni");
+    gtk_widget_add_css_class(new_chat_btn, "ai-new-chat-btn");
+    gtk_widget_set_hexpand(new_chat_btn, TRUE);
+    g_signal_connect(new_chat_btn, "clicked", G_CALLBACK(OnAiNewChatCb), this);
+
+    GtkWidget* filter_toggle_btn = gtk_button_new_from_icon_name("system-search-symbolic");
+    gtk_widget_add_css_class(filter_toggle_btn, "flat");
+    gtk_widget_set_tooltip_text(filter_toggle_btn, "Filtrele");
+    g_signal_connect(filter_toggle_btn, "clicked", G_CALLBACK(OnAiToggleFilterCb), this);
+    gtk_box_append(GTK_BOX(hist_toolbar), new_chat_btn);
+    gtk_box_append(GTK_BOX(hist_toolbar), filter_toggle_btn);
+    gtk_box_append(GTK_BOX(hist_box), hist_toolbar);
+    gtk_box_append(GTK_BOX(hist_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+
+    // Filtre revealer
+    ai_filter_revealer_ = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(ai_filter_revealer_),
+        GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(ai_filter_revealer_), 180);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(ai_filter_revealer_), FALSE);
+
+    GtkWidget* filter_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_add_css_class(filter_box, "ai-filter-bar");
+
+    ai_search_entry_ = gtk_search_entry_new();
+    gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(ai_search_entry_), "Sohbetlerde ara...");
+    g_signal_connect(ai_search_entry_, "search-changed", G_CALLBACK(OnAiSearchChangedCb), this);
+
+    const char* date_items[] = {"Tümü","Bugün","Bu Hafta","Bu Ay", nullptr};
+    GtkStringList* date_model = gtk_string_list_new(date_items);
+    ai_date_filter_ = gtk_drop_down_new(G_LIST_MODEL(date_model), nullptr);
+    g_signal_connect(ai_date_filter_, "notify::selected", G_CALLBACK(OnAiDateFilterCb), this);
+
+    gtk_box_append(GTK_BOX(filter_box), ai_search_entry_);
+    gtk_box_append(GTK_BOX(filter_box), ai_date_filter_);
+    gtk_revealer_set_child(GTK_REVEALER(ai_filter_revealer_), filter_box);
+    gtk_box_append(GTK_BOX(hist_box), ai_filter_revealer_);
+    gtk_box_append(GTK_BOX(hist_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+
+    GtkWidget* list_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(list_scroll),
+        GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(list_scroll, TRUE);
+    ai_chat_list_ = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(ai_chat_list_), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(ai_chat_list_), TRUE);
+    g_signal_connect(ai_chat_list_, "row-activated",
+        G_CALLBACK(+[](GtkListBox*, GtkListBoxRow* row, gpointer ud) {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            int64_t id = (int64_t)(gintptr)g_object_get_data(G_OBJECT(row), "chat-id");
+            if (id) self->LoadAiChat(id);
+        }), this);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(list_scroll), ai_chat_list_);
+    gtk_box_append(GTK_BOX(hist_box), list_scroll);
+    gtk_revealer_set_child(GTK_REVEALER(ai_history_revealer_), hist_box);
+    gtk_box_append(GTK_BOX(ai_outer_), ai_history_revealer_);
+    gtk_box_append(GTK_BOX(ai_outer_), gtk_separator_new(GTK_ORIENTATION_VERTICAL));
+
+    // ── [B] Sohbet alanı ──
+    GtkWidget* chat_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(chat_panel, "ai-panel");
+    gtk_widget_set_size_request(chat_panel, 380, -1);
+    gtk_widget_set_vexpand(chat_panel, TRUE);
+
+    GtkWidget* ai_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_add_css_class(ai_header, "ai-header");
+
+    ai_history_btn_ = gtk_button_new_from_icon_name("view-list-symbolic");
+    gtk_widget_add_css_class(ai_history_btn_, "flat");
+    gtk_widget_set_tooltip_text(ai_history_btn_, "Sohbet geçmişi");
+    g_signal_connect(ai_history_btn_, "clicked", G_CALLBACK(OnAiToggleHistoryCb), this);
+
+    ai_title_label_ = gtk_label_new("AI Asistan");
+    gtk_widget_add_css_class(ai_title_label_, "ai-title-lbl");
+    gtk_widget_set_hexpand(ai_title_label_, TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(ai_title_label_), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(ai_title_label_), 0.0f);
+
+    GtkWidget* close_btn = gtk_button_new_from_icon_name("window-close-symbolic");
+    gtk_widget_add_css_class(close_btn, "flat");
+    g_signal_connect(close_btn, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer ud){ static_cast<BrowserWindow*>(ud)->ToggleAiPanel(); }), this);
+
+    gtk_box_append(GTK_BOX(ai_header), ai_history_btn_);
+    gtk_box_append(GTK_BOX(ai_header), ai_title_label_);
+    gtk_box_append(GTK_BOX(ai_header), close_btn);
+    gtk_box_append(GTK_BOX(chat_panel), ai_header);
+    gtk_box_append(GTK_BOX(chat_panel), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+
+    ai_chat_scroll_ = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(ai_chat_scroll_),
+        GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(ai_chat_scroll_, TRUE);
+    ai_chat_box_ = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_margin_top(ai_chat_box_, 8);
+    gtk_widget_set_margin_bottom(ai_chat_box_, 8);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(ai_chat_scroll_), ai_chat_box_);
+    gtk_box_append(GTK_BOX(chat_panel), ai_chat_scroll_);
+
+    ai_loading_label_ = gtk_label_new("⋯ Yanıt bekleniyor...");
+    gtk_widget_add_css_class(ai_loading_label_, "ai-loading");
+    gtk_widget_set_halign(ai_loading_label_, GTK_ALIGN_START);
+    gtk_widget_set_visible(ai_loading_label_, FALSE);
+    gtk_box_append(GTK_BOX(chat_panel), ai_loading_label_);
+    gtk_box_append(GTK_BOX(chat_panel), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+
+    GtkWidget* input_area = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_add_css_class(input_area, "ai-input-area");
+
+    ai_attach_box_ = gtk_flow_box_new();
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(ai_attach_box_), GTK_SELECTION_NONE);
+    gtk_widget_set_visible(ai_attach_box_, FALSE);
+    gtk_box_append(GTK_BOX(input_area), ai_attach_box_);
+
+    ai_input_buffer_ = GTK_WIDGET(gtk_text_buffer_new(nullptr));
+    g_signal_connect(ai_input_buffer_, "changed", G_CALLBACK(OnAiInputChangedCb), this);
+    ai_input_ = gtk_text_view_new_with_buffer(GTK_TEXT_BUFFER(ai_input_buffer_));
+    gtk_widget_add_css_class(ai_input_, "ai-input-view");
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(ai_input_), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_accepts_tab(GTK_TEXT_VIEW(ai_input_), FALSE);
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(ai_input_), TRUE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(ai_input_), TRUE);
+    gtk_widget_set_focusable(ai_input_, TRUE);
+    gtk_widget_set_can_focus(ai_input_, TRUE);
+    gtk_widget_set_hexpand(ai_input_, TRUE);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(ai_input_), 8);
+    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(ai_input_), 8);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(ai_input_), 6);
+    gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(ai_input_), 6);
+    GtkEventController* key_ctrl = gtk_event_controller_key_new();
+    g_signal_connect(key_ctrl, "key-pressed", G_CALLBACK(OnAiKeyPressCb), this);
+    gtk_widget_add_controller(ai_input_, key_ctrl);
+    // ScrolledWindow zorunlu — GTK4'te standalone GtkTextView klavye input almaz
+    GtkWidget* input_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(input_scroll),
+        GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(input_scroll), TRUE);
+    gtk_widget_set_size_request(input_scroll, -1, 90);
+    gtk_widget_set_hexpand(input_scroll, TRUE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(input_scroll), ai_input_);
+
+    // Dosya sürükle-bırak desteği
+    GtkDropTarget* drop_target = gtk_drop_target_new(G_TYPE_INVALID, GDK_ACTION_COPY);
+    GType drop_types[] = { GDK_TYPE_FILE_LIST, G_TYPE_FILE };
+    gtk_drop_target_set_gtypes(drop_target, drop_types, 2);
+    g_object_set_data(G_OBJECT(drop_target), "bw", this);
+    g_signal_connect(drop_target, "drop",
+        G_CALLBACK(+[](GtkDropTarget* dt, const GValue* val, double, double, gpointer) -> gboolean {
+            auto* self = static_cast<BrowserWindow*>(g_object_get_data(G_OBJECT(dt), "bw"));
+            if (!self) return FALSE;
+            if (G_VALUE_HOLDS(val, GDK_TYPE_FILE_LIST)) {
+                auto* list = static_cast<GSList*>(g_value_get_boxed(val));
+                for (GSList* l = list; l; l = l->next) {
+                    char* path = g_file_get_path(G_FILE(l->data));
+                    if (path) { self->AddAttachmentChip(path); g_free(path); }
+                }
+                return TRUE;
+            }
+            if (G_VALUE_HOLDS(val, G_TYPE_FILE)) {
+                GFile* file = G_FILE(g_value_get_object(val));
+                char* path = g_file_get_path(file);
+                if (path) { self->AddAttachmentChip(path); g_free(path); }
+                g_free(path);
+                return TRUE;
+            }
+            return FALSE;
+        }), nullptr);
+    gtk_widget_add_controller(input_scroll, GTK_EVENT_CONTROLLER(drop_target));
+
+    gtk_box_append(GTK_BOX(input_area), input_scroll);
+
+    // Ajan combo (btn_row içine taşındı)
+    ai_agent_combo_ = gtk_drop_down_new(nullptr, nullptr);
+    gtk_widget_set_hexpand(ai_agent_combo_, TRUE);
+    gtk_widget_set_size_request(ai_agent_combo_, -1, 28);
+    gtk_widget_set_tooltip_text(ai_agent_combo_, "Kullanılacak yapay zeka ajanını seç");
+    UpdateAiAgentCombo();
+
+    // Autocomplete popover (@ tamamlama)
+    ai_autocomplete_pop_ = gtk_popover_new();
+    gtk_popover_set_has_arrow(GTK_POPOVER(ai_autocomplete_pop_), FALSE);
+    gtk_widget_set_parent(ai_autocomplete_pop_, input_scroll);
+    gtk_popover_set_position(GTK_POPOVER(ai_autocomplete_pop_), GTK_POS_TOP);
+    ai_autocomplete_list_ = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(ai_autocomplete_list_), GTK_SELECTION_BROWSE);
+    gtk_popover_set_child(GTK_POPOVER(ai_autocomplete_pop_), ai_autocomplete_list_);
+    {
+        static auto autocomplete_cb = [](GtkListBox*, GtkListBoxRow* row, gpointer ud) {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            const char* name = static_cast<const char*>(
+                g_object_get_data(G_OBJECT(row), "agent-name"));
+            if (!name || !self->ai_input_buffer_) return;
+            GtkTextBuffer* buf = GTK_TEXT_BUFFER(self->ai_input_buffer_);
+            GtkTextIter s2, e2;
+            gtk_text_buffer_get_bounds(buf, &s2, &e2);
+            gchar* txt = gtk_text_buffer_get_text(buf, &s2, &e2, FALSE);
+            std::string t = txt ? txt : "";
+            g_free(txt);
+            auto at_pos = t.rfind('@');
+            if (at_pos != std::string::npos) {
+                std::string nt = t.substr(0, at_pos) + "@" + name + " ";
+                gtk_text_buffer_set_text(buf, nt.c_str(), (int)nt.size());
+                GtkTextIter ei;
+                gtk_text_buffer_get_end_iter(buf, &ei);
+                gtk_text_buffer_place_cursor(buf, &ei);
+            }
+            gtk_popover_popdown(GTK_POPOVER(self->ai_autocomplete_pop_));
+            gtk_widget_grab_focus(self->ai_input_);
+        };
+        g_signal_connect(ai_autocomplete_list_, "row-activated",
+            G_CALLBACK(static_cast<void(*)(GtkListBox*, GtkListBoxRow*, gpointer)>(autocomplete_cb)),
+            this);
+    }
+
+    GtkWidget* btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    GtkWidget* attach_btn = gtk_button_new_from_icon_name("mail-attachment-symbolic");
+    gtk_widget_add_css_class(attach_btn, "flat");
+    gtk_widget_set_tooltip_text(attach_btn, "Dosya ekle");
+    g_signal_connect(attach_btn, "clicked", G_CALLBACK(OnAiAttachCb), this);
+    GtkWidget* send_btn = gtk_button_new_with_label("\xe2\x9e\xa4 G\xc3\xb6nder");
+    gtk_widget_add_css_class(send_btn, "ai-send-btn");
+    g_signal_connect(send_btn, "clicked", G_CALLBACK(OnAiSendCb), this);
+    gtk_box_append(GTK_BOX(btn_row), attach_btn);
+    gtk_box_append(GTK_BOX(btn_row), ai_agent_combo_);
+    gtk_box_append(GTK_BOX(btn_row), send_btn);
+    gtk_box_append(GTK_BOX(input_area), btn_row);
+    gtk_box_append(GTK_BOX(chat_panel), input_area);
+    gtk_box_append(GTK_BOX(ai_outer_), chat_panel);
+
+    RefreshAiChatList();
+}
+
+void BrowserWindow::ToggleAiPanel() {
+    ai_panel_visible_ = !ai_panel_visible_;
+    gtk_widget_set_visible(ai_outer_, ai_panel_visible_);
+    if (ai_btn_) {
+        if (ai_panel_visible_)
+            gtk_widget_add_css_class(ai_btn_, "suggested-action");
+        else
+            gtk_widget_remove_css_class(ai_btn_, "suggested-action");
+    }
+}
+
+void BrowserWindow::ToggleAiHistory() {
+    ai_history_visible_ = !ai_history_visible_;
+    gtk_revealer_set_reveal_child(GTK_REVEALER(ai_history_revealer_), ai_history_visible_);
+}
+
+void BrowserWindow::ToggleAiFilter() {
+    ai_filter_visible_ = !ai_filter_visible_;
+    gtk_revealer_set_reveal_child(GTK_REVEALER(ai_filter_revealer_), ai_filter_visible_);
+    if (ai_filter_visible_) gtk_widget_grab_focus(ai_search_entry_);
+}
+
+void BrowserWindow::RefreshAiChatList() {
+    if (!ai_chat_list_) return;
+    GtkWidget* child = gtk_widget_get_first_child(ai_chat_list_);
+    while (child) {
+        GtkWidget* next = gtk_widget_get_next_sibling(child);
+        gtk_list_box_remove(GTK_LIST_BOX(ai_chat_list_), child);
+        child = next;
+    }
+    AiChatFilter filter;
+    if (ai_search_entry_) {
+        const char* kw = gtk_editable_get_text(GTK_EDITABLE(ai_search_entry_));
+        if (kw) filter.keyword = kw;
+    }
+    if (ai_date_filter_) {
+        guint sel = gtk_drop_down_get_selected(GTK_DROP_DOWN(ai_date_filter_));
+        time_t now = time(nullptr);
+        if (sel == 1) {
+            struct tm* t = localtime(&now);
+            t->tm_hour = 0; t->tm_min = 0; t->tm_sec = 0;
+            filter.from_ts = (int64_t)mktime(t);
+        } else if (sel == 2) {
+            filter.from_ts = (int64_t)(now - 7 * 24 * 3600);
+        } else if (sel == 3) {
+            filter.from_ts = (int64_t)(now - 30 * 24 * 3600);
+        }
+    }
+    auto chats = AiManager::Get().ListChats(filter);
+    int idx = 0;
+    for (const auto& chat : chats) {
+        // Dış kutu: sol bilgi + sil butonu yan yana
+        GtkWidget* outer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        gtk_widget_set_margin_start(outer, 4);
+        gtk_widget_set_margin_end(outer, 2);
+        gtk_widget_set_margin_top(outer, 2);
+        gtk_widget_set_margin_bottom(outer, 2);
+
+        // Sol: başlık + tarih + ID
+        GtkWidget* row_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+        gtk_widget_add_css_class(row_box, "ai-history-item");
+        gtk_widget_set_hexpand(row_box, TRUE);
+
+        // Başlık + kısa sıra no aynı satırda
+        GtkWidget* title_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        GtkWidget* title_lbl = gtk_label_new(chat.title.c_str());
+        gtk_widget_add_css_class(title_lbl, "ai-history-title");
+        gtk_label_set_ellipsize(GTK_LABEL(title_lbl), PANGO_ELLIPSIZE_END);
+        gtk_label_set_xalign(GTK_LABEL(title_lbl), 0.0f);
+        gtk_widget_set_hexpand(title_lbl, TRUE);
+        std::string id_str = "#" + std::to_string(idx + 1);
+        GtkWidget* id_lbl = gtk_label_new(id_str.c_str());
+        gtk_widget_add_css_class(id_lbl, "ai-history-date");
+        gtk_widget_set_halign(id_lbl, GTK_ALIGN_END);
+        gtk_box_append(GTK_BOX(title_row), title_lbl);
+        gtk_box_append(GTK_BOX(title_row), id_lbl);
+
+        char date_buf[32];
+        struct tm* t = localtime((const time_t*)&chat.created_at);
+        strftime(date_buf, sizeof(date_buf), "%d.%m.%Y %H:%M", t);
+        std::string date_str = std::string(date_buf) + " \xc2\xb7 " +
+            std::to_string(chat.messages.size()) + " mesaj";
+        GtkWidget* date_lbl = gtk_label_new(date_str.c_str());
+        gtk_widget_add_css_class(date_lbl, "ai-history-date");
+        gtk_label_set_xalign(GTK_LABEL(date_lbl), 0.0f);
+
+        gtk_box_append(GTK_BOX(row_box), title_row);
+        gtk_box_append(GTK_BOX(row_box), date_lbl);
+
+        // Sil butonu
+        GtkWidget* del_btn = gtk_button_new_from_icon_name("user-trash-symbolic");
+        gtk_widget_add_css_class(del_btn, "flat");
+        gtk_widget_add_css_class(del_btn, "circular");
+        gtk_widget_set_tooltip_text(del_btn, "Sohbeti sil");
+        gtk_widget_set_valign(del_btn, GTK_ALIGN_CENTER);
+        g_object_set_data(G_OBJECT(del_btn), "chat-id", (gpointer)(gintptr)chat.id);
+        g_object_set_data(G_OBJECT(del_btn), "bw", this);
+        g_signal_connect(del_btn, "clicked",
+            G_CALLBACK(+[](GtkButton* b, gpointer) {
+                auto* self = static_cast<BrowserWindow*>(g_object_get_data(G_OBJECT(b), "bw"));
+                int64_t cid = (int64_t)(gintptr)g_object_get_data(G_OBJECT(b), "chat-id");
+                AiManager::Get().DeleteChat(cid);
+                if (self->ai_current_chat_id_ == cid) {
+                    // Silinen aktif sohbetse yeni sohbet başlat
+                    const auto& p = SettingsManager::Get().Prefs();
+                    self->ai_current_chat_id_ = AiManager::Get().NewChat(p.ai_provider, p.ai_model);
+                    self->ai_current_chat_ = AiManager::Get().LoadChat(self->ai_current_chat_id_);
+                    if (self->ai_title_label_)
+                        gtk_label_set_text(GTK_LABEL(self->ai_title_label_), "AI Asistan");
+                    GtkWidget* ch = gtk_widget_get_first_child(self->ai_chat_box_);
+                    while (ch) {
+                        GtkWidget* nx = gtk_widget_get_next_sibling(ch);
+                        gtk_box_remove(GTK_BOX(self->ai_chat_box_), ch);
+                        ch = nx;
+                    }
+                }
+                self->RefreshAiChatList();
+            }), nullptr);
+
+        gtk_box_append(GTK_BOX(outer), row_box);
+        gtk_box_append(GTK_BOX(outer), del_btn);
+
+        if (chat.id == ai_current_chat_id_)
+            gtk_widget_add_css_class(row_box, "selected");
+        GtkWidget* row = gtk_list_box_row_new();
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), outer);
+        g_object_set_data(G_OBJECT(row), "chat-id", (gpointer)(gintptr)chat.id);
+        gtk_list_box_append(GTK_LIST_BOX(ai_chat_list_), row);
+        ++idx;
+    }
+}
+
+void BrowserWindow::LoadAiChat(int64_t id) {
+    ai_current_chat_id_ = id;
+    ai_current_chat_ = AiManager::Get().LoadChat(id);
+    if (ai_title_label_)
+        gtk_label_set_text(GTK_LABEL(ai_title_label_), ai_current_chat_.title.c_str());
+    GtkWidget* child = gtk_widget_get_first_child(ai_chat_box_);
+    while (child) {
+        GtkWidget* next = gtk_widget_get_next_sibling(child);
+        gtk_box_remove(GTK_BOX(ai_chat_box_), child);
+        child = next;
+    }
+    for (const auto& m : ai_current_chat_.messages) {
+        if (m.role == "system") continue;
+        AppendAiBubble(m.role, m.content);
+    }
+    RefreshAiChatList();
+    g_idle_add([](gpointer ud) -> gboolean {
+        auto* scroll = GTK_SCROLLED_WINDOW(ud);
+        GtkAdjustment* adj = gtk_scrolled_window_get_vadjustment(scroll);
+        gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+        return G_SOURCE_REMOVE;
+    }, ai_chat_scroll_);
+}
+
+// Pango markup için özel karakterleri escape et
+static std::string pango_esc(const std::string& s) {
+    std::string o; o.reserve(s.size() + 8);
+    for (char c : s) {
+        if      (c == '&')  o += "&amp;";
+        else if (c == '<')  o += "&lt;";
+        else if (c == '>')  o += "&gt;";
+        else                o += c;
+    }
+    return o;
+}
+
+// Satır içi markdown → Pango markup (bold, italic, code)
+static std::string inline_md(const std::string& s) {
+    std::string o;
+    size_t i = 0;
+    while (i < s.size()) {
+        // ``` inline kod (tek backtick)
+        if (s[i] == '`') {
+            size_t end = s.find('`', i + 1);
+            if (end != std::string::npos) {
+                o += "<tt><span background=\"#2a2a2a\" foreground=\"#e0e0e0\">";
+                o += pango_esc(s.substr(i + 1, end - i - 1));
+                o += "</span></tt>";
+                i = end + 1;
+                continue;
+            }
+        }
+        // **bold**
+        if (i + 1 < s.size() && s[i] == '*' && s[i+1] == '*') {
+            size_t end = s.find("**", i + 2);
+            if (end != std::string::npos) {
+                o += "<b>" + pango_esc(s.substr(i + 2, end - i - 2)) + "</b>";
+                i = end + 2;
+                continue;
+            }
+        }
+        // *italic* (tek yıldız)
+        if (s[i] == '*') {
+            size_t end = s.find('*', i + 1);
+            if (end != std::string::npos && end > i + 1) {
+                o += "<i>" + pango_esc(s.substr(i + 1, end - i - 1)) + "</i>";
+                i = end + 1;
+                continue;
+            }
+        }
+        // __bold__
+        if (i + 1 < s.size() && s[i] == '_' && s[i+1] == '_') {
+            size_t end = s.find("__", i + 2);
+            if (end != std::string::npos) {
+                o += "<b>" + pango_esc(s.substr(i + 2, end - i - 2)) + "</b>";
+                i = end + 2;
+                continue;
+            }
+        }
+        o += pango_esc(std::string(1, s[i]));
+        ++i;
+    }
+    return o;
+}
+
+// Markdown metni → Pango markup
+static std::string md_to_pango(const std::string& md) {
+    std::istringstream ss(md);
+    std::string line, out;
+    bool in_code = false;
+    while (std::getline(ss, line)) {
+        // Kod bloğu ```
+        if (line.rfind("```", 0) == 0) {
+            in_code = !in_code;
+            if (in_code)
+                out += "<span background=\"#1e1e2e\" foreground=\"#cdd6f4\" font_family=\"monospace\">";
+            else
+                out += "</span>";
+            out += '\n';
+            continue;
+        }
+        if (in_code) {
+            out += pango_esc(line) + '\n';
+            continue;
+        }
+        // Yatay çizgi ---
+        if (line == "---" || line == "***" || line == "___") {
+            out += "<span color=\"#585b70\">\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80</span>\n";
+            continue;
+        }
+        // ### Başlık
+        if (line.rfind("### ", 0) == 0)
+            out += "<b><span size=\"medium\">" + inline_md(line.substr(4)) + "</span></b>\n";
+        else if (line.rfind("## ", 0) == 0)
+            out += "<b><span size=\"large\">" + inline_md(line.substr(3)) + "</span></b>\n";
+        else if (line.rfind("# ", 0) == 0)
+            out += "<b><span size=\"x-large\">" + inline_md(line.substr(2)) + "</span></b>\n";
+        // > alıntı
+        else if (line.rfind("> ", 0) == 0)
+            out += "<i><span color=\"#a6adc8\">" + inline_md(line.substr(2)) + "</span></i>\n";
+        // - liste
+        else if ((line.rfind("- ", 0) == 0) || (line.rfind("* ", 0) == 0 && line.size() > 2))
+            out += "  \xe2\x80\xa2 " + inline_md(line.substr(2)) + "\n";
+        // Numaralı liste
+        else if (line.size() > 2 && std::isdigit((unsigned char)line[0]) && line[1] == '.') {
+            size_t sp = line.find(". ");
+            if (sp != std::string::npos)
+                out += "  " + pango_esc(line.substr(0, sp + 2)) + inline_md(line.substr(sp + 2)) + "\n";
+            else
+                out += inline_md(line) + "\n";
+        }
+        else
+            out += inline_md(line) + "\n";
+    }
+    if (in_code) out += "</span>"; // kapatılmamış kod bloğu
+    // Sondaki fazla newline temizle
+    while (!out.empty() && out.back() == '\n') out.pop_back();
+    return out;
+}
+
+void BrowserWindow::AppendAiBubble(const std::string& role, const std::string& text) {
+    GtkWidget* bubble;
+    if (role == "user") {
+        bubble = gtk_label_new(text.c_str());
+        gtk_label_set_wrap(GTK_LABEL(bubble), TRUE);
+        gtk_label_set_wrap_mode(GTK_LABEL(bubble), PANGO_WRAP_WORD_CHAR);
+        gtk_label_set_selectable(GTK_LABEL(bubble), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(bubble), 0.0f);
+        gtk_widget_add_css_class(bubble, "ai-bubble-user");
+        gtk_widget_set_halign(bubble, GTK_ALIGN_FILL);
+    } else {
+        // AI yanıtı: markdown → Pango markup
+        std::string markup = md_to_pango(text);
+        bubble = gtk_label_new(nullptr);
+        gtk_label_set_markup(GTK_LABEL(bubble), markup.c_str());
+        gtk_label_set_wrap(GTK_LABEL(bubble), TRUE);
+        gtk_label_set_wrap_mode(GTK_LABEL(bubble), PANGO_WRAP_WORD_CHAR);
+        gtk_label_set_selectable(GTK_LABEL(bubble), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(bubble), 0.0f);
+        gtk_widget_add_css_class(bubble, "ai-bubble-ai");
+        gtk_widget_set_halign(bubble, GTK_ALIGN_FILL);
+    }
+    gtk_box_append(GTK_BOX(ai_chat_box_), bubble);
+    g_idle_add([](gpointer ud) -> gboolean {
+        auto* scroll = GTK_SCROLLED_WINDOW(ud);
+        GtkAdjustment* adj = gtk_scrolled_window_get_vadjustment(scroll);
+        gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+        return G_SOURCE_REMOVE;
+    }, ai_chat_scroll_);
+}
+
+void BrowserWindow::ShowAiLoading(bool show) {
+    if (ai_loading_label_) gtk_widget_set_visible(ai_loading_label_, show);
+}
+
+std::string BrowserWindow::CollectAiInputText() {
+    if (!ai_input_buffer_) return {};
+    GtkTextIter s, e;
+    gtk_text_buffer_get_bounds(GTK_TEXT_BUFFER(ai_input_buffer_), &s, &e);
+    char* txt = gtk_text_iter_get_text(&s, &e);
+    std::string result = txt ? txt : "";
+    g_free(txt);
+    return result;
+}
+
+void BrowserWindow::ParseAndHighlightTokens() {
+    if (!ai_input_buffer_) return;
+    GtkTextBuffer* buf = GTK_TEXT_BUFFER(ai_input_buffer_);
+    GtkTextTagTable* tbl = gtk_text_buffer_get_tag_table(buf);
+    if (!gtk_text_tag_table_lookup(tbl, "at-hl"))
+        gtk_text_buffer_create_tag(buf, "at-hl",
+            "background", "#1e3a5f", "foreground", "#89b4fa", nullptr);
+    if (!gtk_text_tag_table_lookup(tbl, "hash-hl"))
+        gtk_text_buffer_create_tag(buf, "hash-hl",
+            "background", "#1a3a1a", "foreground", "#a6e3a1", nullptr);
+    if (!gtk_text_tag_table_lookup(tbl, "star-hl"))
+        gtk_text_buffer_create_tag(buf, "star-hl",
+            "background", "#3a2800", "foreground", "#fab387", nullptr);
+    GtkTextIter s, e;
+    gtk_text_buffer_get_bounds(buf, &s, &e);
+    gtk_text_buffer_remove_all_tags(buf, &s, &e);
+    gchar* raw = gtk_text_iter_get_text(&s, &e);
+    if (!raw) return;
+    std::string text(raw);
+    g_free(raw);
+    size_t i = 0;
+    while (i < text.size()) {
+        char c = text[i];
+        if (c == '@' || c == '#' || c == '*') {
+            size_t j = i + 1;
+            while (j < text.size() && !std::isspace((unsigned char)text[j]) &&
+                   text[j] != '@' && text[j] != '#' && text[j] != '*') ++j;
+            if (j > i + 1) {
+                const char* tag = (c == '@') ? "at-hl" : (c == '#') ? "hash-hl" : "star-hl";
+                GtkTextIter ts, te;
+                gtk_text_buffer_get_iter_at_offset(buf, &ts, (int)i);
+                gtk_text_buffer_get_iter_at_offset(buf, &te, (int)j);
+                gtk_text_buffer_apply_tag_by_name(buf, tag, &ts, &te);
+            }
+            i = j;
+        } else { ++i; }
+    }
+    // Son token @ ile başlıyorsa autocomplete göster
+    {
+        auto at_pos = text.rfind('@');
+        if (at_pos != std::string::npos) {
+            // @ sonrası boşluk yoksa (hâlâ yazıyor)
+            std::string suffix = text.substr(at_pos + 1);
+            bool has_space = suffix.find_first_of(" \t\n") != std::string::npos;
+            if (!has_space)
+                ShowAgentAutocomplete(suffix);
+            else
+                HideAgentAutocomplete();
+        } else {
+            HideAgentAutocomplete();
+        }
+    }
+}
+
+void BrowserWindow::UpdateAiAgentCombo() {
+    if (!ai_agent_combo_) return;
+    const auto& agents = AiAgentStore::Get().Agents();
+    if (agents.empty()) {
+        GtkStringList* sl = gtk_string_list_new(nullptr);
+        gtk_string_list_append(sl, "Ajan yok\nAyarlar'dan ekle");
+        gtk_drop_down_set_model(GTK_DROP_DOWN(ai_agent_combo_), G_LIST_MODEL(sl));
+        g_object_unref(sl);
+        gtk_widget_set_sensitive(ai_agent_combo_, FALSE);
+        // Boş durum için de factory kur
+    } else {
+        gtk_widget_set_sensitive(ai_agent_combo_, TRUE);
+        std::vector<std::string> items;
+        for (const auto& a : agents) {
+            std::string prov = AiAgent::DetectProvider(a.api_key);
+            // Format: "AjanIsmi\nprovider · model"
+            items.push_back(a.name + "\n" + prov + "  \xc2\xb7  " + a.model);
+        }
+        std::vector<const char*> ptrs;
+        for (const auto& s : items) ptrs.push_back(s.c_str());
+        ptrs.push_back(nullptr);
+        GtkStringList* sl = gtk_string_list_new(ptrs.data());
+        gtk_drop_down_set_model(GTK_DROP_DOWN(ai_agent_combo_), G_LIST_MODEL(sl));
+        g_object_unref(sl);
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(ai_agent_combo_), 0);
+    }
+
+    // Custom factory: üst satır büyük (ajan ismi), alt satır küçük gri (provider · model)
+    GtkListItemFactory* factory = gtk_signal_list_item_factory_new();
+    g_signal_connect(factory, "setup",
+        G_CALLBACK(+[](GtkListItemFactory*, GtkListItem* item, gpointer) {
+            GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+            gtk_widget_set_margin_top(box, 2);
+            gtk_widget_set_margin_bottom(box, 2);
+            GtkWidget* name_lbl = gtk_label_new("");
+            gtk_label_set_xalign(GTK_LABEL(name_lbl), 0.0f);
+            gtk_widget_add_css_class(name_lbl, "ai-combo-name");
+            GtkWidget* sub_lbl = gtk_label_new("");
+            gtk_label_set_xalign(GTK_LABEL(sub_lbl), 0.0f);
+            gtk_widget_add_css_class(sub_lbl, "ai-combo-sub");
+            gtk_box_append(GTK_BOX(box), name_lbl);
+            gtk_box_append(GTK_BOX(box), sub_lbl);
+            gtk_list_item_set_child(item, box);
+        }), nullptr);
+    g_signal_connect(factory, "bind",
+        G_CALLBACK(+[](GtkListItemFactory*, GtkListItem* item, gpointer) {
+            GtkWidget* box = gtk_list_item_get_child(item);
+            if (!box) return;
+            GtkWidget* name_lbl = gtk_widget_get_first_child(box);
+            GtkWidget* sub_lbl  = name_lbl ? gtk_widget_get_next_sibling(name_lbl) : nullptr;
+            auto* str_obj = GTK_STRING_OBJECT(gtk_list_item_get_item(item));
+            if (!str_obj) return;
+            const char* full = gtk_string_object_get_string(str_obj);
+            if (!full) return;
+            std::string s(full);
+            auto nl = s.find('\n');
+            std::string name = (nl != std::string::npos) ? s.substr(0, nl) : s;
+            std::string sub  = (nl != std::string::npos) ? s.substr(nl + 1) : "";
+            if (name_lbl) gtk_label_set_text(GTK_LABEL(name_lbl), name.c_str());
+            if (sub_lbl)  gtk_label_set_text(GTK_LABEL(sub_lbl),  sub.c_str());
+        }), nullptr);
+    gtk_drop_down_set_factory(GTK_DROP_DOWN(ai_agent_combo_), factory);
+    g_object_unref(factory);
+
+    // Seçili butonda da aynı factory (list_factory = liste açıkken, factory = kapalıyken)
+    GtkListItemFactory* btn_factory = gtk_signal_list_item_factory_new();
+    g_signal_connect(btn_factory, "setup",
+        G_CALLBACK(+[](GtkListItemFactory*, GtkListItem* item, gpointer) {
+            GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+            GtkWidget* name_lbl = gtk_label_new("");
+            gtk_label_set_xalign(GTK_LABEL(name_lbl), 0.0f);
+            gtk_widget_set_hexpand(name_lbl, TRUE);
+            gtk_widget_add_css_class(name_lbl, "ai-combo-name");
+            GtkWidget* sub_lbl = gtk_label_new("");
+            gtk_label_set_xalign(GTK_LABEL(sub_lbl), 0.0f);
+            gtk_widget_add_css_class(sub_lbl, "ai-combo-sub");
+            gtk_box_append(GTK_BOX(box), name_lbl);
+            gtk_box_append(GTK_BOX(box), sub_lbl);
+            gtk_list_item_set_child(item, box);
+        }), nullptr);
+    g_signal_connect(btn_factory, "bind",
+        G_CALLBACK(+[](GtkListItemFactory*, GtkListItem* item, gpointer) {
+            GtkWidget* box = gtk_list_item_get_child(item);
+            if (!box) return;
+            GtkWidget* name_lbl = gtk_widget_get_first_child(box);
+            GtkWidget* sub_lbl  = name_lbl ? gtk_widget_get_next_sibling(name_lbl) : nullptr;
+            auto* str_obj = GTK_STRING_OBJECT(gtk_list_item_get_item(item));
+            if (!str_obj) return;
+            const char* full = gtk_string_object_get_string(str_obj);
+            if (!full) return;
+            std::string s(full);
+            auto nl = s.find('\n');
+            std::string name = (nl != std::string::npos) ? s.substr(0, nl) : s;
+            std::string sub  = (nl != std::string::npos) ? s.substr(nl + 1) : "";
+            if (name_lbl) gtk_label_set_text(GTK_LABEL(name_lbl), name.c_str());
+            if (sub_lbl)  gtk_label_set_text(GTK_LABEL(sub_lbl),  sub.c_str());
+        }), nullptr);
+    gtk_drop_down_set_list_factory(GTK_DROP_DOWN(ai_agent_combo_), btn_factory);
+    g_object_unref(btn_factory);
+}
+
+void BrowserWindow::ShowAgentAutocomplete(const std::string& prefix) {
+    if (!ai_autocomplete_pop_ || !ai_autocomplete_list_) return;
+    const auto& agents = AiAgentStore::Get().Agents();
+    if (agents.empty()) { HideAgentAutocomplete(); return; }
+
+    // Listeyi temizle
+    GtkWidget* child = gtk_widget_get_first_child(ai_autocomplete_list_);
+    while (child) {
+        GtkWidget* nx = gtk_widget_get_next_sibling(child);
+        gtk_list_box_remove(GTK_LIST_BOX(ai_autocomplete_list_), child);
+        child = nx;
+    }
+
+    std::string plc = prefix;
+    std::transform(plc.begin(), plc.end(), plc.begin(), ::tolower);
+    bool any = false;
+    for (const auto& ag : agents) {
+        std::string aname_lc = ag.name;
+        std::transform(aname_lc.begin(), aname_lc.end(), aname_lc.begin(), ::tolower);
+        if (plc.empty() || aname_lc.rfind(plc, 0) == 0) {
+            std::string prov = AiAgent::DetectProvider(ag.api_key);
+            std::string label = ag.name + "  \xe2\x80\x94  " + prov + " / " + ag.model;
+            GtkWidget* row_lbl = gtk_label_new(label.c_str());
+            gtk_label_set_xalign(GTK_LABEL(row_lbl), 0.0f);
+            gtk_widget_set_margin_start(row_lbl, 8);
+            gtk_widget_set_margin_end(row_lbl, 8);
+            gtk_widget_set_margin_top(row_lbl, 4);
+            gtk_widget_set_margin_bottom(row_lbl, 4);
+            GtkWidget* lbrow = gtk_list_box_row_new();
+            gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(lbrow), row_lbl);
+            g_object_set_data_full(G_OBJECT(lbrow), "agent-name",
+                g_strdup(ag.name.c_str()), g_free);
+            gtk_list_box_append(GTK_LIST_BOX(ai_autocomplete_list_), lbrow);
+            any = true;
+        }
+    }
+    if (any) {
+        gtk_popover_set_autohide(GTK_POPOVER(ai_autocomplete_pop_), FALSE);
+        gtk_popover_popup(GTK_POPOVER(ai_autocomplete_pop_));
+        // Fokus input'ta kalsın
+        gtk_widget_grab_focus(ai_input_);
+    } else {
+        gtk_popover_popdown(GTK_POPOVER(ai_autocomplete_pop_));
+    }
+}
+
+void BrowserWindow::HideAgentAutocomplete() {
+    if (ai_autocomplete_pop_)
+        gtk_popover_popdown(GTK_POPOVER(ai_autocomplete_pop_));
+}
+
+void BrowserWindow::AddAttachmentChip(const std::string& path) {
+    std::string fname = path.substr(path.rfind('/') + 1);
+    ai_attachments_.push_back(path);
+
+    GtkWidget* chip_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    gtk_widget_add_css_class(chip_row, "ai-chip");
+
+    GtkWidget* lbl = gtk_label_new(("\xf0\x9f\x93\x8e " + fname).c_str());
+    gtk_widget_set_tooltip_text(lbl, path.c_str());
+
+    GtkWidget* rm_btn = gtk_button_new_with_label("\xc3\x97");
+    gtk_widget_add_css_class(rm_btn, "ai-chip-remove");
+    gtk_widget_set_tooltip_text(rm_btn, "Kald\xc4\xb1r");
+    g_object_set_data_full(G_OBJECT(rm_btn), "chip-path", g_strdup(path.c_str()), g_free);
+    g_object_set_data(G_OBJECT(rm_btn), "chip-self", this);
+
+    g_signal_connect(rm_btn, "clicked",
+        G_CALLBACK(+[](GtkButton* b, gpointer) {
+            const char* p = static_cast<const char*>(g_object_get_data(G_OBJECT(b), "chip-path"));
+            auto* self = static_cast<BrowserWindow*>(g_object_get_data(G_OBJECT(b), "chip-self"));
+            if (!p || !self) return;
+            std::string path_str(p);
+            auto& v = self->ai_attachments_;
+            v.erase(std::remove(v.begin(), v.end(), path_str), v.end());
+            // rm_btn → chip_row → FlowBoxChild → FlowBox
+            GtkWidget* chip_row_w = gtk_widget_get_parent(GTK_WIDGET(b));
+            GtkWidget* fb_child   = gtk_widget_get_parent(chip_row_w);
+            GtkWidget* fb         = gtk_widget_get_parent(fb_child);
+            if (fb) gtk_flow_box_remove(GTK_FLOW_BOX(fb), fb_child);
+            if (self->ai_attach_box_)
+                gtk_widget_set_visible(self->ai_attach_box_,
+                    gtk_widget_get_first_child(self->ai_attach_box_) != nullptr);
+        }), nullptr);
+
+    gtk_box_append(GTK_BOX(chip_row), lbl);
+    gtk_box_append(GTK_BOX(chip_row), rm_btn);
+    gtk_flow_box_append(GTK_FLOW_BOX(ai_attach_box_), chip_row);
+    gtk_widget_set_visible(ai_attach_box_, TRUE);
+}
+
+void BrowserWindow::SendAiMessage() {
+    std::string raw = CollectAiInputText();
+    size_t sp = raw.find_first_not_of(" \t\n\r");
+    if (sp == std::string::npos) return;
+    std::string input = raw.substr(sp);
+    while (!input.empty() && std::isspace((unsigned char)input.back())) input.pop_back();
+    if (input.empty()) return;
+
+    // Aktif ajanı belirle: önce dropdown seçimi, yoksa ilk ajan, yoksa eski prefs
+    const auto& agents = AiAgentStore::Get().Agents();
+    std::string active_api_key;
+    std::string active_api_url;
+    std::string active_model;
+    if (!agents.empty()) {
+        // Dropdown'dan seçili indeksi al
+        guint sel = ai_agent_combo_
+            ? gtk_drop_down_get_selected(GTK_DROP_DOWN(ai_agent_combo_))
+            : 0;
+        if (sel == GTK_INVALID_LIST_POSITION || sel >= agents.size()) sel = 0;
+        active_api_key = agents[sel].api_key;
+        active_api_url = agents[sel].api_url;
+        active_model   = agents[sel].model;
+    } else {
+        const auto& p = SettingsManager::Get().Prefs();
+        active_api_key = p.ai_api_key;
+        active_api_url = p.ai_base_url;
+        active_model   = p.ai_model;
+    }
+    std::string provider = AiAgent::DetectProvider(active_api_key);
+    std::string model    = active_model;
+
+    if (ai_current_chat_id_ == 0) {
+        ai_current_chat_id_ = AiManager::Get().NewChat(provider, model);
+        ai_current_chat_ = AiManager::Get().LoadChat(ai_current_chat_id_);
+    }
+
+    // @ajan-ismi token override — metinde @isim varsa o ajanı seç
+    // Aynı zamanda @token'ları temiz mesajdan çıkar
+    std::string clean_input;
+    {
+        size_t i = 0;
+        while (i < input.size()) {
+            if (input[i] == '@') {
+                size_t end = i + 1;
+                while (end < input.size() && !std::isspace((unsigned char)input[end])) ++end;
+                std::string tok = input.substr(i + 1, end - i - 1);
+                // Ajan listesinde ara
+                for (const auto& ag : agents) {
+                    std::string aname = ag.name;
+                    std::transform(aname.begin(), aname.end(), aname.begin(), ::tolower);
+                    std::string tok_lc = tok;
+                    std::transform(tok_lc.begin(), tok_lc.end(), tok_lc.begin(), ::tolower);
+                    if (aname == tok_lc || aname.rfind(tok_lc, 0) == 0) {
+                        active_api_key = ag.api_key;
+                        active_api_url = ag.api_url;
+                        model          = ag.model;
+                        provider       = AiAgent::DetectProvider(ag.api_key);
+                        break;
+                    }
+                }
+                // @token'ı clean_input'a ekleme — atla (ve ardındaki boşluğu da)
+                i = end;
+                while (i < input.size() && input[i] == ' ') ++i;
+            } else {
+                clean_input += input[i++];
+            }
+        }
+        // Baş/son boşlukları temizle
+        size_t cs = clean_input.find_first_not_of(" \t\n\r");
+        if (cs == std::string::npos) { clean_input.clear(); }
+        else {
+            clean_input = clean_input.substr(cs);
+            while (!clean_input.empty() && std::isspace((unsigned char)clean_input.back()))
+                clean_input.pop_back();
+        }
+    }
+    if (clean_input.empty()) return; // sadece @token yazılmışsa gönderme
+    input = clean_input;
+
+    // #id → sekme sayfa içeriği — async JS, tüm fetch'ler bitince DoSendAiMessage çağrılır
+    {
+        // Kaç adet #id token var say
+        struct SendCtx {
+            BrowserWindow* self;
+            std::string input;
+            std::string provider, model, api_key, api_url;
+            int pending;
+        };
+        auto* sctx = new SendCtx{this, input, provider, model,
+                                  active_api_key, active_api_url, 0};
+
+        for (size_t p = 0; p < input.size(); ++p) {
+            if (input[p] == '#' && p + 1 < input.size() && std::isdigit((unsigned char)input[p+1])) {
+                size_t end = p + 1;
+                while (end < input.size() && std::isdigit((unsigned char)input[end])) ++end;
+                int tab_id = std::stoi(input.substr(p + 1, end - p - 1));
+                for (auto* t : tabs_) {
+                    if (t->id == tab_id && t->webview) {
+                        const char* uri = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(t->webview));
+                        std::string url_str = uri ? uri : "bilinmiyor";
+                        static const char* js =
+                            "(function(){"
+                            "var skip=['script','style','noscript','iframe','header','footer',"
+                            "'nav','aside','form','button','input','select','textarea'];"
+                            "function clean(n){"
+                            "if(n.nodeType===3){var t=n.textContent.replace(/\\s+/g,' ');return t;}"
+                            "if(n.nodeType!==1)return '';"
+                            "var tag=n.tagName.toLowerCase();"
+                            "if(skip.indexOf(tag)>=0)return '';"
+                            "var cls=(n.className||'').toLowerCase()+(n.id||'').toLowerCase();"
+                            "if(/ad|banner|sponsor|popup|cookie|consent|gdpr|promo/.test(cls))return '';"
+                            "var r='';"
+                            "for(var i=0;i<n.childNodes.length;i++)r+=clean(n.childNodes[i]);"
+                            "return r;}"
+                            "var txt=clean(document.body||document).replace(/[ \\t]{2,}/g,' ')"
+                            ".replace(/\\n{3,}/g,'\\n\\n').trim();"
+                            "return txt.length>8000?txt.substring(0,8000)+'...':txt;"
+                            "})()";
+                        struct TabCtx {
+                            SendCtx* sctx;
+                            std::string url;
+                            int id;
+                        };
+                        ++sctx->pending;
+                        auto* tctx = new TabCtx{sctx, url_str, tab_id};
+                        webkit_web_view_evaluate_javascript(
+                            WEBKIT_WEB_VIEW(t->webview), js, -1, nullptr, nullptr, nullptr,
+                            [](GObject* src, GAsyncResult* res, gpointer ud) {
+                                auto* tc = static_cast<TabCtx*>(ud);
+                                GError* err = nullptr;
+                                JSCValue* val = webkit_web_view_evaluate_javascript_finish(
+                                    WEBKIT_WEB_VIEW(src), res, &err);
+                                std::string page_text;
+                                if (val && jsc_value_is_string(val)) {
+                                    char* s = jsc_value_to_string(val);
+                                    page_text = s ? s : "";
+                                    g_free(s);
+                                    g_object_unref(val);
+                                }
+                                if (err) g_error_free(err);
+                                AiMessage sys;
+                                sys.role = "system";
+                                sys.timestamp = (int64_t)time(nullptr);
+                                sys.content = "Sekme #" + std::to_string(tc->id) +
+                                    " — URL: " + tc->url + "\n\nSayfa İçeriği:\n" + page_text;
+                                tc->sctx->self->ai_current_chat_.messages.push_back(sys);
+                                --tc->sctx->pending;
+                                if (tc->sctx->pending == 0) {
+                                    tc->sctx->self->DoSendAiMessage(
+                                        tc->sctx->input, tc->sctx->provider,
+                                        tc->sctx->model, tc->sctx->api_key,
+                                        tc->sctx->api_url);
+                                    delete tc->sctx;
+                                }
+                                delete tc;
+                            }, tctx);
+                        break;
+                    }
+                }
+            }
+        }
+        if (sctx->pending > 0) {
+            // JS fetch'ler bekliyor — DoSendAiMessage callback içinde çağrılacak
+            return;
+        }
+        delete sctx;
+    }
+
+    DoSendAiMessage(input, provider, model, active_api_key, active_api_url);
+}
+
+void BrowserWindow::DoSendAiMessage(const std::string& input,
+                                    const std::string& provider,
+                                    const std::string& model,
+                                    const std::string& api_key,
+                                    const std::string& api_url) {
+    // *id → geçmiş sohbet
+    for (size_t p = 0; p < input.size(); ++p) {
+        if (input[p] == '*' && p + 1 < input.size() && std::isdigit((unsigned char)input[p+1])) {
+            size_t end = p + 1;
+            while (end < input.size() && std::isdigit((unsigned char)input[end])) ++end;
+            int64_t cid = (int64_t)std::stoll(input.substr(p + 1, end - p - 1));
+            AiChat old = AiManager::Get().LoadChat(cid);
+            if (old.id != 0) {
+                std::string ctx = "Geçmiş sohbet *" + std::to_string(cid) +
+                    " (" + old.title + "):\n";
+                for (const auto& m : old.messages)
+                    if (m.role != "system") ctx += "[" + m.role + "]: " + m.content + "\n";
+                AiMessage sys; sys.role = "system"; sys.content = ctx;
+                sys.timestamp = (int64_t)time(nullptr);
+                ai_current_chat_.messages.push_back(sys);
+            }
+        }
+    }
+
+    // Dosya ekleri
+    for (const auto& fpath : ai_attachments_) {
+        auto res = FileExtractor::Extract(fpath);
+        std::string fname = fpath.substr(fpath.rfind('/') + 1);
+        AiMessage sys; sys.role = "system"; sys.timestamp = (int64_t)time(nullptr);
+        if (!res.error.empty())
+            sys.content = "Dosya (" + fname + ") okunamadı: " + res.error;
+        else if (res.is_image)
+            sys.content = "Kullanıcı bir resim ekledi: " + fname;
+        else
+            sys.content = "Ek dosya (" + fname + "):\n" + res.text;
+        ai_current_chat_.messages.push_back(sys);
+    }
+
+    // Kullanıcı mesajı
+    AiMessage user_msg;
+    user_msg.role = "user"; user_msg.content = input;
+    user_msg.timestamp = (int64_t)time(nullptr);
+    ai_current_chat_.messages.push_back(user_msg);
+
+    AppendAiBubble("user", input);
+    gtk_text_buffer_set_text(GTK_TEXT_BUFFER(ai_input_buffer_), "", 0);
+    ai_attachments_.clear();
+    {
+        GtkWidget* chip = gtk_widget_get_first_child(ai_attach_box_);
+        while (chip) {
+            GtkWidget* nx = gtk_widget_get_next_sibling(chip);
+            gtk_flow_box_remove(GTK_FLOW_BOX(ai_attach_box_), chip);
+            chip = nx;
+        }
+    }
+    gtk_widget_set_visible(ai_attach_box_, FALSE);
+    ShowAiLoading(true);
+
+    AiManager::Get().SendMessage(
+        ai_current_chat_, provider, model, api_key, api_url,
+        [this](const std::string& content, bool /*done*/, const std::string& err) {
+            ShowAiLoading(false);
+            if (!err.empty())
+                AppendAiBubble("assistant", "⚠ Hata: " + err);
+            else if (!content.empty())
+                AppendAiBubble("assistant", content);
+            RefreshAiChatList();
+        });
+}
+
+// ── Static callbacks ──────────────────────────────────────────────────────────
+
+void BrowserWindow::OnAiSendCb(GtkButton*, gpointer ud) {
+    static_cast<BrowserWindow*>(ud)->SendAiMessage();
+}
+
+void BrowserWindow::OnAiNewChatCb(GtkButton*, gpointer ud) {
+    auto* self = static_cast<BrowserWindow*>(ud);
+    const auto& p = SettingsManager::Get().Prefs();
+    self->ai_current_chat_id_ = AiManager::Get().NewChat(p.ai_provider, p.ai_model);
+    self->ai_current_chat_ = AiManager::Get().LoadChat(self->ai_current_chat_id_);
+    if (self->ai_title_label_)
+        gtk_label_set_text(GTK_LABEL(self->ai_title_label_), "AI Asistan");
+    GtkWidget* child = gtk_widget_get_first_child(self->ai_chat_box_);
+    while (child) {
+        GtkWidget* next = gtk_widget_get_next_sibling(child);
+        gtk_box_remove(GTK_BOX(self->ai_chat_box_), child);
+        child = next;
+    }
+    self->RefreshAiChatList();
+}
+
+void BrowserWindow::OnAiToggleHistoryCb(GtkButton*, gpointer ud) {
+    static_cast<BrowserWindow*>(ud)->ToggleAiHistory();
+}
+
+void BrowserWindow::OnAiToggleFilterCb(GtkButton*, gpointer ud) {
+    static_cast<BrowserWindow*>(ud)->ToggleAiFilter();
+}
+
+void BrowserWindow::OnAiSearchChangedCb(GtkSearchEntry*, gpointer ud) {
+    static_cast<BrowserWindow*>(ud)->RefreshAiChatList();
+}
+
+void BrowserWindow::OnAiDateFilterCb(GtkDropDown*, GParamSpec*, gpointer ud) {
+    static_cast<BrowserWindow*>(ud)->RefreshAiChatList();
+}
+
+void BrowserWindow::OnAiInputChangedCb(GtkTextBuffer*, gpointer ud) {
+    static_cast<BrowserWindow*>(ud)->ParseAndHighlightTokens();
+}
+
+gboolean BrowserWindow::OnAiKeyPressCb(GtkEventControllerKey*, guint keyval,
+                                        guint /*keycode*/, GdkModifierType state, gpointer ud) {
+    auto* self = static_cast<BrowserWindow*>(ud);
+    // Escape → autocomplete kapat
+    if (keyval == GDK_KEY_Escape) {
+        if (self->ai_autocomplete_pop_ &&
+            gtk_widget_get_visible(self->ai_autocomplete_pop_)) {
+            self->HideAgentAutocomplete();
+            return TRUE;
+        }
+        return FALSE;
+    }
+    // Enter (shift yok) → gönder, event'i tüket
+    if (keyval == GDK_KEY_Return && !(state & GDK_SHIFT_MASK)) {
+        // Autocomplete açıksa ilk satırı seç
+        if (self->ai_autocomplete_pop_ &&
+            gtk_widget_get_visible(self->ai_autocomplete_pop_)) {
+            GtkListBoxRow* row = gtk_list_box_get_row_at_index(
+                GTK_LIST_BOX(self->ai_autocomplete_list_), 0);
+            if (row) {
+                g_signal_emit_by_name(self->ai_autocomplete_list_, "row-activated", row);
+                return TRUE;
+            }
+        }
+        self->SendAiMessage();
+        return TRUE;
+    }
+    // Backspace → eğer imleç @token içindeyse token'ı tamamen sil
+    if (keyval == GDK_KEY_BackSpace && !(state & (GDK_SHIFT_MASK|GDK_CONTROL_MASK))) {
+        if (!self->ai_input_buffer_) return FALSE;
+        GtkTextBuffer* buf = GTK_TEXT_BUFFER(self->ai_input_buffer_);
+        GtkTextIter cursor;
+        gtk_text_buffer_get_iter_at_mark(buf, &cursor,
+            gtk_text_buffer_get_insert(buf));
+        int cur_off = gtk_text_iter_get_offset(&cursor);
+        GtkTextIter s, e;
+        gtk_text_buffer_get_bounds(buf, &s, &e);
+        gchar* raw = gtk_text_iter_get_text(&s, &e);
+        std::string text = raw ? raw : "";
+        g_free(raw);
+        // İmleç solundaki @ tokenını bul
+        if (cur_off > 0) {
+            int at_off = -1;
+            for (int k = cur_off - 1; k >= 0; --k) {
+                if ((unsigned char)text[k] <= 0x7F || (unsigned char)text[k] >= 0xC0) {
+                    if (text[k] == '@') { at_off = k; break; }
+                    if (text[k] == ' ' || text[k] == '\n') break;
+                }
+            }
+            if (at_off >= 0) {
+                // @token bölgesi: at_off..cur_off
+                bool in_token = true;
+                for (int k = at_off + 1; k < cur_off; ++k)
+                    if (text[k] == ' ' || text[k] == '\n') { in_token = false; break; }
+                if (in_token && cur_off > at_off + 1) {
+                    GtkTextIter ts, te;
+                    gtk_text_buffer_get_iter_at_offset(buf, &ts, at_off);
+                    gtk_text_buffer_get_iter_at_offset(buf, &te, cur_off);
+                    gtk_text_buffer_delete(buf, &ts, &te);
+                    return TRUE;
+                }
+            }
+        }
+    }
+    // Diğer tuşlar normal şekilde GtkTextView'a gitsin
+    return FALSE;
+}
+
+void BrowserWindow::OnAiAttachCb(GtkButton*, gpointer ud) {
+    auto* self = static_cast<BrowserWindow*>(ud);
+    GtkFileDialog* dlg = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dlg, "Dosya Seç");
+    gtk_file_dialog_open(dlg, GTK_WINDOW(self->window_), nullptr,
+        [](GObject* src, GAsyncResult* res, gpointer ud2) {
+            auto* self2 = static_cast<BrowserWindow*>(ud2);
+            GError* err = nullptr;
+            GFile* file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(src), res, &err);
+            if (file) {
+                char* path = g_file_get_path(file);
+                if (path) { self2->AddAttachmentChip(path); g_free(path); }
+                g_object_unref(file);
+            }
+            if (err) g_error_free(err);
+        }, self);
+    g_object_unref(dlg);
+}
+
+void BrowserWindow::SaveTabSession() {
+    const char* home = g_get_home_dir();
+    std::string path = std::string(home) + "/.local/share/ferzan-browser/last_session.txt";
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    for (auto* t : tabs_) {
+        if (!t->webview) continue;
+        const char* uri = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(t->webview));
+        std::string url = uri ? uri : t->url;
+        // ferzan:// iç sayfaları kaydetme — sadece gerçek URL'ler
+        if (url.empty() || url.rfind("ferzan://", 0) == 0 ||
+            url.rfind("about:", 0) == 0) continue;
+        f << url << "\n";
+    }
+}
+
+void BrowserWindow::RestoreTabSession() {
+    const char* home = g_get_home_dir();
+    std::string path = std::string(home) + "/.local/share/ferzan-browser/last_session.txt";
+    std::ifstream f(path);
+    if (!f) return;
+    std::string line;
+    bool opened_any = false;
+    while (std::getline(f, line)) {
+        if (line.empty()) continue;
+        NewTab(line);
+        opened_any = true;
+    }
+    (void)opened_any;
+}
+
 void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
     if (!active_tab_) return;
     auto* wv = WEBKIT_WEB_VIEW(active_tab_->webview);
@@ -2451,6 +3929,56 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
     } else if (uri == "ferzan://ayarlar/gizlilik") {
         html  = BuildPrivacyHTML();
         title = "Gizlilik — Ferzan";
+    } else if (uri == "ferzan://ayarlar/yapay-zeka") {
+        html  = BuildSettingsAiHTML();
+        title = "Yapay Zeka — Ferzan";
+    } else if (uri.rfind("ferzan://ai-ajan-kaydet", 0) == 0) {
+        auto decode = [&](const std::string& key) -> std::string {
+            std::string search = key + "=";
+            auto pos = uri.find(search);
+            if (pos == std::string::npos) return "";
+            pos += search.size();
+            auto end = uri.find('&', pos);
+            std::string enc = (end == std::string::npos) ? uri.substr(pos) : uri.substr(pos, end - pos);
+            std::string out;
+            for (size_t i = 0; i < enc.size(); ++i) {
+                if (enc[i] == '%' && i + 2 < enc.size()) {
+                    int v = 0; sscanf(enc.substr(i+1,2).c_str(), "%x", &v);
+                    out += (char)v; i += 2;
+                } else if (enc[i] == '+') { out += ' '; }
+                else { out += enc[i]; }
+            }
+            return out;
+        };
+        AiAgent ag;
+        ag.id      = decode("id");
+        ag.name    = decode("name");
+        ag.api_key = decode("key");
+        ag.model   = decode("model");
+        ag.api_url = decode("url");
+        // Düzenleme modunda (id varsa) mevcut anahtar boşsa eski anahtar korunur
+        if (!ag.id.empty() && ag.api_key.empty()) {
+            auto* existing = AiAgentStore::Get().FindById(ag.id);
+            if (existing) ag.api_key = existing->api_key;
+        }
+        AiAgentStore::Get().AddAgent(ag);
+        webkit_web_view_load_uri(wv, "ferzan://ayarlar/yapay-zeka");
+        return;
+    } else if (uri.rfind("ferzan://ai-ajan-sil", 0) == 0) {
+        auto pos = uri.find("id=");
+        if (pos != std::string::npos) {
+            std::string enc_id = uri.substr(pos + 3);
+            std::string id;
+            for (size_t i = 0; i < enc_id.size(); ++i) {
+                if (enc_id[i] == '%' && i + 2 < enc_id.size()) {
+                    int v = 0; sscanf(enc_id.substr(i+1,2).c_str(), "%x", &v);
+                    id += (char)v; i += 2;
+                } else { id += enc_id[i]; }
+            }
+            AiAgentStore::Get().RemoveAgent(id);
+        }
+        webkit_web_view_load_uri(wv, "ferzan://ayarlar/yapay-zeka");
+        return;
     } else if (uri == "ferzan://gecmis") {
         html  = BuildHistoryHTML();
         title = "Geçmiş — Ferzan";
@@ -2461,8 +3989,8 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
         WebKitWebsiteDataManager* dm = webkit_network_session_get_website_data_manager(ns);
         webkit_website_data_manager_clear(dm,
             static_cast<WebKitWebsiteDataTypes>(
-                WEBKIT_WEBSITE_DATA_COOKIES | WEBKIT_WEBSITE_DATA_MEMORY_CACHE |
-                WEBKIT_WEBSITE_DATA_DISK_CACHE | WEBKIT_WEBSITE_DATA_SESSION_STORAGE),
+                WEBKIT_WEBSITE_DATA_MEMORY_CACHE |
+                WEBKIT_WEBSITE_DATA_DISK_CACHE),
             0, nullptr, nullptr, nullptr);
         webkit_web_view_load_uri(wv, "ferzan://gecmis");
         return;
@@ -2548,19 +4076,27 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
         std::string histdays = parse_param("histdays");
         std::string maxtabs  = parse_param("maxtabs");
         std::string restore  = parse_param("restore");
-        std::string fontsize = parse_param("fontsize");
-        std::string minfont  = parse_param("minfont");
-        if (!hp.empty())       prefs.homepage          = hp;
-        if (!zoom.empty())     prefs.default_zoom      = std::stod(zoom) / 100.0;
-        if (!js.empty())       prefs.javascript_enabled= (js == "1");
-        if (!hw.empty())       prefs.hardware_accel    = (hw == "1");
-        if (!se.empty())       prefs.search_engine     = se;
+        std::string fontsize    = parse_param("fontsize");
+        std::string minfont     = parse_param("minfont");
+        std::string ai_provider = parse_param("ai_provider");
+        std::string ai_model    = parse_param("ai_model");
+        std::string ai_api_key  = parse_param("ai_api_key");
+        std::string ai_base_url = parse_param("ai_base_url");
+        if (!hp.empty())          prefs.homepage          = hp;
+        if (!zoom.empty())        prefs.default_zoom      = std::stod(zoom) / 100.0;
+        if (!js.empty())          prefs.javascript_enabled= (js == "1");
+        if (!hw.empty())          prefs.hardware_accel    = (hw == "1");
+        if (!se.empty())          prefs.search_engine     = se;
         prefs.download_dir = dldir;
-        if (!histdays.empty()) prefs.history_days      = std::stoi(histdays);
-        if (!maxtabs.empty())  prefs.max_tabs          = std::stoi(maxtabs);
-        if (!restore.empty())  prefs.restore_tabs      = (restore == "1");
-        if (!fontsize.empty()) prefs.font_size         = std::stoi(fontsize);
-        if (!minfont.empty())  prefs.min_font_size     = std::stoi(minfont);
+        if (!histdays.empty())    prefs.history_days      = std::stoi(histdays);
+        if (!maxtabs.empty())     prefs.max_tabs          = std::stoi(maxtabs);
+        if (!restore.empty())     prefs.restore_tabs      = (restore == "1");
+        if (!fontsize.empty())    prefs.font_size         = std::stoi(fontsize);
+        if (!minfont.empty())     prefs.min_font_size     = std::stoi(minfont);
+        if (!ai_provider.empty()) prefs.ai_provider       = ai_provider;
+        if (!ai_model.empty())    prefs.ai_model          = ai_model;
+        if (!ai_api_key.empty())  prefs.ai_api_key        = ai_api_key;
+        prefs.ai_base_url = ai_base_url;
         SettingsManager::Get().Save();
         // Kayıt sonrası tüm mevcut sekmelere js/hw/zoom uygula
         {

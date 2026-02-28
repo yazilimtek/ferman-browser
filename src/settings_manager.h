@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 
 namespace ferzan {
 
@@ -16,6 +17,45 @@ struct Settings {
     bool        restore_tabs      = false;     // başlatmada sekmeleri geri yükle
     int         font_size         = 16;        // varsayılan yazı boyutu (px)
     int         min_font_size     = 10;        // minimum yazı boyutu (px)
+    // Yapay Zeka — eski tek-ajan alanlar (geriye dönük uyumluluk)
+    std::string ai_provider       = "deepseek";
+    std::string ai_api_key        = "";
+    std::string ai_model          = "deepseek-chat";
+    std::string ai_base_url       = "";
+};
+
+// Yapay zeka ajanı
+struct AiAgent {
+    std::string id;        // benzersiz (uuid benzeri string)
+    std::string name;      // kullanıcının verdiği isim
+    std::string api_key;
+    std::string api_url;   // boşsa varsayılan endpoint
+    std::string model;
+    // Provider API key önekinden otomatik belirlenir
+    static std::string DetectProvider(const std::string& api_key) {
+        if (api_key.rfind("sk-ant-", 0) == 0)  return "anthropic";
+        if (api_key.rfind("sk-or-",  0) == 0)  return "openrouter";
+        if (api_key.rfind("sk-",     0) == 0)  return "openai";
+        if (api_key.rfind("ds-",     0) == 0)  return "deepseek";
+        if (api_key.rfind("gsk_",    0) == 0)  return "groq";
+        return "deepseek"; // varsayılan
+    }
+};
+
+class AiAgentStore {
+public:
+    static AiAgentStore& Get();
+    void Init(const std::string& config_dir);
+    void Save();
+    std::vector<AiAgent>& Agents() { return agents_; }
+    const std::vector<AiAgent>& Agents() const { return agents_; }
+    AiAgent* FindById(const std::string& id);
+    std::string AddAgent(const AiAgent& a);  // returns id
+    void RemoveAgent(const std::string& id);
+private:
+    AiAgentStore() = default;
+    std::string filepath_;
+    std::vector<AiAgent> agents_;
 };
 
 // Arama motoru URL'si döndürür (sorgu %s ile)
