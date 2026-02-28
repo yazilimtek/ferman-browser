@@ -14,6 +14,8 @@ struct Settings {
     int         history_days      = 90;        // geçmiş sakla (gün), 0=sonsuz
     int         max_tabs          = 20;        // maks sekme sayısı
     bool        restore_tabs      = false;     // başlatmada sekmeleri geri yükle
+    int         font_size         = 16;        // varsayılan yazı boyutu (px)
+    int         min_font_size     = 10;        // minimum yazı boyutu (px)
 };
 
 // Arama motoru URL'si döndürür (sorgu %s ile)

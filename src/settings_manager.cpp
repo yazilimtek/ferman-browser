@@ -53,6 +53,8 @@ void SettingsManager::Load() {
     settings_.history_days       = (int)get_dbl("General", "history_days",  (double)settings_.history_days);
     settings_.max_tabs           = (int)get_dbl("General", "max_tabs",       (double)settings_.max_tabs);
     settings_.restore_tabs       = get_bool("General", "restore_tabs",      settings_.restore_tabs);
+    settings_.font_size           = (int)get_dbl("General", "font_size",       (double)settings_.font_size);
+    settings_.min_font_size       = (int)get_dbl("General", "min_font_size",   (double)settings_.min_font_size);
 
     g_key_file_free(kf);
 }
@@ -69,6 +71,8 @@ void SettingsManager::Save() {
     g_key_file_set_double (kf, "General", "history_days",       (double)settings_.history_days);
     g_key_file_set_double (kf, "General", "max_tabs",           (double)settings_.max_tabs);
     g_key_file_set_boolean(kf, "General", "restore_tabs",       settings_.restore_tabs);
+    g_key_file_set_double (kf, "General", "font_size",           (double)settings_.font_size);
+    g_key_file_set_double (kf, "General", "min_font_size",       (double)settings_.min_font_size);
 
     GError* err = nullptr;
     if (!g_key_file_save_to_file(kf, filepath_.c_str(), &err)) {

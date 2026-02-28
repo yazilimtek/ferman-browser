@@ -1,4 +1,5 @@
 #include "download_manager.h"
+#include "settings_manager.h"
 #include <gio/gio.h>
 #include <cstring>
 #include <string>
@@ -120,11 +121,22 @@ void DownloadManager::OnDecideDestinationCb(WebKitDownload* dl,
                                               gpointer ud) {
     auto* item = static_cast<DownloadItem*>(ud);
 
-    // ~/Downloads/ferzan/ klasörüne kaydet
-    const char* downloads_dir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
-    if (!downloads_dir) downloads_dir = g_get_home_dir();
-
-    std::string dir = std::string(downloads_dir) + "/ferzan";
+    // Ayarlardaki download_dir'i kullan, yoksa ~/İndirilenler
+    const std::string& cfg_dir = SettingsManager::Get().Prefs().download_dir;
+    std::string dir;
+    if (!cfg_dir.empty()) {
+        // ~ genişlet
+        if (cfg_dir[0] == '~') {
+            const char* h = g_get_home_dir();
+            dir = std::string(h ? h : "") + cfg_dir.substr(1);
+        } else {
+            dir = cfg_dir;
+        }
+    } else {
+        const char* downloads_dir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+        if (!downloads_dir) downloads_dir = g_get_home_dir();
+        dir = std::string(downloads_dir) + "/ferzan";
+    }
     g_mkdir_with_parents(dir.c_str(), 0755);
 
     std::string filename = suggested ? suggested : "download";

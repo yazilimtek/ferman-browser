@@ -143,8 +143,6 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
 
     // Tab alanı: sadece scroll — pack_start ile sola yaslı
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), tabs_scroll);
-    // [+] butonu sağa — hamburger menünün soluna pack_end
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), new_tab_btn_);
     // title_widget boş (ortalama placeholder kaldırıldı)
     gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header),
         gtk_label_new(nullptr));
@@ -225,7 +223,6 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_widget_add_css_class(menu_btn_, "flat");
     gtk_widget_set_tooltip_text(menu_btn_, "Menü");
     g_object_unref(menu_model);
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), menu_btn_);
     // pack_end sırası GTK4'te ters: son eklenen en sola gider
     // İstenen görsel sıra (soldan sağa): [+] [⬇] [zoom] [☰]
 
@@ -472,6 +469,12 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
 // ── Tab yönetimi ─────────────────────────────────────────────────────────────
 
 Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
+    // Maksimum sekme limiti kontrolü
+    const int max_t = SettingsManager::Get().Prefs().max_tabs;
+    if (max_t > 0 && (int)tabs_.size() >= max_t) {
+        if (!tabs_.empty()) SwitchToTab(tabs_.back());
+        return tabs_.empty() ? nullptr : tabs_.back();
+    }
     auto* tab = new Tab();
     tab->id   = next_tab_id_++;
     tab->url  = url;
@@ -500,6 +503,9 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
         prefs.hardware_accel
             ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
             : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+    webkit_web_view_set_zoom_level(WEBKIT_WEB_VIEW(tab->webview), prefs.default_zoom);
+    webkit_settings_set_default_font_size(wk_settings, (guint32)prefs.font_size);
+    webkit_settings_set_minimum_font_size(wk_settings, (guint32)prefs.min_font_size);
     gtk_widget_set_hexpand(tab->webview, TRUE);
     gtk_widget_set_vexpand(tab->webview, TRUE);
     g_object_set_data(G_OBJECT(tab->webview), "tab", tab);
@@ -1018,7 +1024,9 @@ void BrowserWindow::OnUrlActivateCb(GtkEntry*, gpointer ud) {
     static_cast<BrowserWindow*>(ud)->OnUrlActivate();
 }
 void BrowserWindow::OnNewTabCb(GtkButton*, gpointer ud) {
-    static_cast<BrowserWindow*>(ud)->NewTab(kHomePage);
+    auto* self = static_cast<BrowserWindow*>(ud);
+    const auto& hp = SettingsManager::Get().Prefs().homepage;
+    self->NewTab(hp.empty() ? self->kHomePage : hp);
 }
 void BrowserWindow::OnClearUrlCb(GtkButton*, gpointer ud) {
     auto* self = static_cast<BrowserWindow*>(ud);
@@ -1047,10 +1055,28 @@ void BrowserWindow::OnMenuActionWithParamCb(GSimpleAction* action, GVariant* par
 void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud) {
     auto* self = static_cast<BrowserWindow*>(ud);
     const char* name = g_action_get_name(G_ACTION(action));
-    if      (!g_strcmp0(name, "new-tab"))       self->NewTab(self->kHomePage);
-    else if (!g_strcmp0(name, "new-window"))    self->OpenInNewWindow(self->kHomePage);
+    if      (!g_strcmp0(name, "new-tab")) {
+        const auto& hp = SettingsManager::Get().Prefs().homepage;
+        self->NewTab(hp.empty() ? self->kHomePage : hp);
+    }
+    else if (!g_strcmp0(name, "new-window")) {
+        const auto& hp = SettingsManager::Get().Prefs().homepage;
+        self->OpenInNewWindow(hp.empty() ? self->kHomePage : hp);
+    }
     else if (!g_strcmp0(name, "close-tab"))     { if (self->active_tab_) self->CloseTab(self->active_tab_); }
-    else if (!g_strcmp0(name, "go-home"))       self->NewTab(self->kHomePage);
+    else if (!g_strcmp0(name, "go-home")) {
+        if (self->active_tab_) {
+            const auto& hp = SettingsManager::Get().Prefs().homepage;
+            std::string url = hp.empty() ? self->kHomePage : hp;
+            if (url == self->kHomePage) {
+                std::string html = self->BuildHomeHTML();
+                webkit_web_view_load_html(WEBKIT_WEB_VIEW(self->active_tab_->webview), html.c_str(), nullptr);
+            } else {
+                if (url.find("://") == std::string::npos) url = "https://" + url;
+                webkit_web_view_load_uri(WEBKIT_WEB_VIEW(self->active_tab_->webview), url.c_str());
+            }
+        }
+    }
     else if (!g_strcmp0(name, "reload"))        self->OnReload();
     else if (!g_strcmp0(name, "go-back"))       self->OnBack();
     else if (!g_strcmp0(name, "go-forward"))    self->OnForward();
@@ -2004,11 +2030,13 @@ std::string BrowserWindow::BuildAppearanceSettingsHTML() {
     <h3>Yazı Tipi</h3>
     <div class="row">
       <label>Varsayılan Yazı Boyutu (px)</label>
-      <input type="number" id="fontsize" min="8" max="32" step="1" value="16">
+      <input type="number" id="fontsize" min="8" max="32" step="1" value=")css" +
+        std::to_string(SettingsManager::Get().Prefs().font_size) + R"css(">
     </div>
     <div class="row">
       <label>Minimum Yazı Boyutu (px)</label>
-      <input type="number" id="minfont" min="6" max="24" step="1" value="10">
+      <input type="number" id="minfont" min="6" max="24" step="1" value=")css" +
+        std::to_string(SettingsManager::Get().Prefs().min_font_size) + R"css(">
     </div>
   </div>
   <div class="card">
@@ -2050,9 +2078,12 @@ function toast(msg,ok){
 }
 function saveApp(e){
   e.preventDefault();
-  var zoom=document.getElementById('zoom').value;
   try{
-    window.location.href='ferzan://ayarlar-kaydet?zoom='+zoom;
+    var zoom=document.getElementById('zoom').value;
+    var fontsize=document.getElementById('fontsize').value;
+    var minfont=document.getElementById('minfont').value;
+    window.location.href='ferzan://ayarlar-kaydet?zoom='+zoom
+      +'&fontsize='+fontsize+'&minfont='+minfont;
     toast('Görünüm ayarları kaydedildi.',true);
   }catch(err){toast('Hata oluştu!',false);}
 }
@@ -2517,16 +2548,41 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
         std::string histdays = parse_param("histdays");
         std::string maxtabs  = parse_param("maxtabs");
         std::string restore  = parse_param("restore");
+        std::string fontsize = parse_param("fontsize");
+        std::string minfont  = parse_param("minfont");
         if (!hp.empty())       prefs.homepage          = hp;
         if (!zoom.empty())     prefs.default_zoom      = std::stod(zoom) / 100.0;
         if (!js.empty())       prefs.javascript_enabled= (js == "1");
         if (!hw.empty())       prefs.hardware_accel    = (hw == "1");
         if (!se.empty())       prefs.search_engine     = se;
-        prefs.download_dir = dldir;  // boş da olabilir
+        prefs.download_dir = dldir;
         if (!histdays.empty()) prefs.history_days      = std::stoi(histdays);
         if (!maxtabs.empty())  prefs.max_tabs          = std::stoi(maxtabs);
         if (!restore.empty())  prefs.restore_tabs      = (restore == "1");
+        if (!fontsize.empty()) prefs.font_size         = std::stoi(fontsize);
+        if (!minfont.empty())  prefs.min_font_size     = std::stoi(minfont);
         SettingsManager::Get().Save();
+        // Kayıt sonrası tüm mevcut sekmelere js/hw/zoom uygula
+        {
+            const auto& p2 = SettingsManager::Get().Prefs();
+            for (auto* t : tabs_) {
+                if (!t->webview) continue;
+                auto* ws = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(t->webview));
+                if (!js.empty())
+                    webkit_settings_set_enable_javascript(ws, p2.javascript_enabled);
+                if (!hw.empty())
+                    webkit_settings_set_hardware_acceleration_policy(ws,
+                        p2.hardware_accel
+                            ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
+                            : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+                if (!zoom.empty())
+                    webkit_web_view_set_zoom_level(WEBKIT_WEB_VIEW(t->webview), p2.default_zoom);
+                if (!fontsize.empty())
+                    webkit_settings_set_default_font_size(ws, (guint32)p2.font_size);
+                if (!minfont.empty())
+                    webkit_settings_set_minimum_font_size(ws, (guint32)p2.min_font_size);
+            }
+        }
         // Kayıt sonrası ayarlar sayfasına dön
         webkit_web_view_load_uri(wv, "ferzan://ayarlar");
         return;
