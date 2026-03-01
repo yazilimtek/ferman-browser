@@ -5,12 +5,12 @@
 namespace ferman {
 
 struct Settings {
-    std::string homepage         = "ferman://home";
+    std::string homepage         = "https://www.yandex.com.tr";
     double      default_zoom     = 1.0;
     bool        javascript_enabled = true;
     bool        hardware_accel   = false;  // varsayılan NEVER (offset bug)
     std::string language         = "tr";
-    std::string search_engine    = "google";  // google|bing|yahoo|yandex|duckduckgo|baidu
+    std::string search_engine    = "yandex";  // google|bing|yahoo|yandex|duckduckgo|baidu
     std::string download_dir      = "";        // boşsa ~/İndirilenler
     int         history_days      = 90;        // geçmiş sakla (gün), 0=sonsuz
     int         max_tabs          = 20;        // maks sekme sayısı

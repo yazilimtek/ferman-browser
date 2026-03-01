@@ -88,7 +88,7 @@ set(CPACK_PACKAGE_NAME        "ferman-browser")
 set(CPACK_PACKAGE_VERSION     "${APP_VERSION}")
 set(CPACK_PACKAGE_VENDOR      "Ferman")
 set(CPACK_PACKAGE_DESCRIPTION "Ferman Browser - Modern Linux Web Tarayıcısı")
-set(CPACK_PACKAGE_CONTACT     "ferman@example.com")
+set(CPACK_PACKAGE_CONTACT     "ferman@ferman.net.tr")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")
 
 # .deb

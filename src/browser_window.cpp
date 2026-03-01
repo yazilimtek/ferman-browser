@@ -167,8 +167,8 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     // Tab kutusu — doğrudan title_widget olarak eklenir,
     // GTK4 header bar onu sol/sağ widget'lar arasındaki alana sıkıştırır
     tab_box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
-    gtk_box_set_homogeneous(GTK_BOX(tab_box_), TRUE);
-    gtk_widget_set_halign(tab_box_, GTK_ALIGN_FILL);
+    gtk_box_set_homogeneous(GTK_BOX(tab_box_), FALSE);
+    gtk_widget_set_halign(tab_box_, GTK_ALIGN_START);
     gtk_widget_set_hexpand(tab_box_, TRUE);
     gtk_widget_set_vexpand(tab_box_, TRUE);
     gtk_widget_set_valign(tab_box_, GTK_ALIGN_FILL);
@@ -178,8 +178,8 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_widget_set_tooltip_text(new_tab_btn_, "Yeni sekme");
     gtk_widget_add_css_class(new_tab_btn_, "flat");
 
-    // tab_box_'u title_widget olarak ayarla — header sınırları içinde daralır
-    gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), tab_box_);
+    // tab_box_'u pack_start ile ekle — sola yaslanır
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), tab_box_);
 
     // ── Hamburger menü (sağ) ──
     GMenu* menu_model = g_menu_new();
@@ -763,6 +763,7 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     gtk_widget_set_margin_top(row, 0);
     gtk_widget_set_margin_bottom(row, 0);
     gtk_widget_set_hexpand(row, FALSE);
+    gtk_widget_set_halign(row, GTK_ALIGN_START);
     gtk_widget_set_vexpand(row, TRUE);
     gtk_widget_set_valign(row, GTK_ALIGN_FILL);
 
@@ -786,7 +787,7 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     gtk_label_set_max_width_chars(GTK_LABEL(tab->label), 16);
     gtk_label_set_ellipsize(GTK_LABEL(tab->label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_hexpand(tab->label, TRUE);
-    gtk_widget_set_halign(tab->label, GTK_ALIGN_FILL);
+    gtk_widget_set_halign(tab->label, GTK_ALIGN_START);
     gtk_label_set_xalign(GTK_LABEL(tab->label), 0.0f);
 
     GtkWidget* close_btn = gtk_button_new_from_icon_name("window-close-symbolic");
@@ -919,7 +920,12 @@ void BrowserWindow::SwitchToTab(Tab* tab) {
     }
 
     const char* title = webkit_web_view_get_title(WEBKIT_WEB_VIEW(tab->webview));
-    std::string wt = title ? (std::string(title) + " — " + kAppName) : kAppName;
+    std::string wt;
+    if (!title || std::string(title).empty() || std::string(title) == kAppName) {
+        wt = kAppName;
+    } else {
+        wt = std::string(title) + " — " + kAppName;
+    }
     gtk_window_set_title(GTK_WINDOW(window_), wt.c_str());
 }
 
@@ -1144,8 +1150,12 @@ void BrowserWindow::OnTitleChanged(WebKitWebView* wv) {
     UpdateTabLabel(tab);
 
     if (tab == active_tab_) {
-        std::string wt = tab->title.empty() ? kAppName :
-                         (tab->title + " — " + kAppName);
+        std::string wt;
+        if (tab->title.empty() || tab->title == kAppName) {
+            wt = kAppName;
+        } else {
+            wt = tab->title + " — " + kAppName;
+        }
         gtk_window_set_title(GTK_WINDOW(window_), wt.c_str());
     }
 }
@@ -5057,7 +5067,8 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
     UpdateTabLabel(active_tab_);
     // URL barını güncelle (programatik — focus yoksa changed sinyali popup açmaz)
     gtk_editable_set_text(GTK_EDITABLE(url_entry_), uri.c_str());
-    gtk_window_set_title(GTK_WINDOW(window_), (title + " — " + kAppName).c_str());
+    std::string wt = (title.empty() || title == kAppName) ? kAppName : (title + " — " + kAppName);
+    gtk_window_set_title(GTK_WINDOW(window_), wt.c_str());
 }
 
 // ── Static callback'ler (yeni) ───────────────────────────────────────────
