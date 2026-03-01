@@ -128,6 +128,18 @@ void SessionManager::Init() {
     // Kalıcı kimlik bilgileri (login oturumları)
     webkit_network_session_set_persistent_credential_storage_enabled(session_, TRUE);
 
+    // Cookie kalıcılığı
+    WebKitCookieManager* cookie_mgr =
+        webkit_network_session_get_cookie_manager(session_);
+    std::string cookie_file = data_dir_ + "/cookies.sqlite";
+    webkit_cookie_manager_set_persistent_storage(
+        cookie_mgr,
+        cookie_file.c_str(),
+        WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+    webkit_cookie_manager_set_accept_policy(
+        cookie_mgr,
+        WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
+
     // Web context (cache modeli)
     context_ = webkit_web_context_get_default();
     webkit_web_context_set_cache_model(context_, WEBKIT_CACHE_MODEL_WEB_BROWSER);

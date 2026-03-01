@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <cstdio>
+#include <unistd.h>
 
 #ifdef HAVE_POPPLER
 #include <poppler/glib/poppler.h>
@@ -164,7 +166,22 @@ ExtractResult FileExtractor::ExtractPdf(const std::string& path) {
     g_object_unref(doc);
     r.text = out.str();
 #else
-    r.error = "PDF desteği etkin değil (poppler-glib kurulu değil)";
+    // poppler yoksa pdftotext komutu ile dene
+    std::string tmp = "/tmp/ferzan_pdf_" + std::to_string((long)getpid()) + ".txt";
+    std::string cmd = "pdftotext -nopgbrk \"" + path + "\" \"" + tmp + "\" 2>/dev/null";
+    if (system(cmd.c_str()) == 0) {
+        std::ifstream f(tmp, std::ios::binary);
+        if (f) {
+            std::string text((std::istreambuf_iterator<char>(f)),
+                              std::istreambuf_iterator<char>());
+            if (text.size() > 512 * 1024)
+                text = text.substr(0, 512 * 1024) + "\n[...PDF kesildi...]";
+            r.text = text;
+            remove(tmp.c_str());
+            return r;
+        }
+    }
+    r.error = "PDF desteği etkin değil (poppler-glib veya pdftotext kurulu değil)";
 #endif
     return r;
 }

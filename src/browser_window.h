@@ -17,6 +17,7 @@ namespace ferzan {
 class BrowserWindow {
 public:
     explicit BrowserWindow(GtkApplication* app);
+    void  RebuildBookmarksBar();
 
 private:
     Tab*  NewTab(const std::string& url, bool load = true, bool switch_to = true);
@@ -46,7 +47,6 @@ private:
     void  UpdateFavButton();
     void  ShowUrlSuggestions(const std::string& text);
     void  HideUrlSuggestions();
-    void  RebuildBookmarksBar();
     void  ToggleBookmarksBar();
     std::string BuildHomeHTML();
     std::string BuildSettingsHTML(const std::string& page = "genel");
@@ -59,6 +59,10 @@ private:
     void  HandleFerzanScheme(const std::string& uri);
     void  SaveTabSession();
     void  RestoreTabSession();
+    void  ShowFindBar();
+    void  HideFindBar();
+    void  FindNext();
+    void  FindPrev();
 
     // ── AI Panel ──
     void  BuildAiPanel();
@@ -128,6 +132,12 @@ private:
     GtkWidget* bookmarks_box_   = nullptr;
     GtkWidget* zoom_reset_btn_  = nullptr;
     bool       bookmarks_visible_ = false;
+
+    // ── Sayfa İçi Arama (Сtrl+F) ──
+    GtkWidget* find_bar_        = nullptr;  // GtkRevealer
+    GtkWidget* find_entry_      = nullptr;  // GtkSearchEntry
+    GtkWidget* find_count_lbl_  = nullptr;  // “3/12” etiketi
+    bool       find_visible_    = false;
 
     // ── AI Panel widget'ları ──
     GtkWidget* ai_btn_              = nullptr;  // URL bar'daki AI butonu

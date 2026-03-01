@@ -9,6 +9,7 @@ namespace ferzan {
 struct AiMessage {
     std::string role;       // "user" | "assistant" | "system"
     std::string content;
+    std::string image_url;  // base64 data URI for vision (optional)
     int64_t     timestamp = 0;
 };
 
