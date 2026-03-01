@@ -28,10 +28,10 @@ static const char* kTabCSS = R"(
 .tab-inactive > label, .tab-inactive label { color: alpha(@window_fg_color, 0.55); font-weight: normal; }
 .tab-inactive:hover { background-color: alpha(@window_fg_color, 0.07); }
 .tab-id-label {
-    font-size: 0.70rem;
-    font-weight: 600;
-    opacity: 0.45;
-    min-width: 18px;
+    font-size: 0.78rem;
+    font-weight: 700;
+    opacity: 0.65;
+    min-width: 20px;
 }
 .status-bar {
     font-size: 0.75rem;
@@ -137,7 +137,9 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tabs_scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_NEVER);
     gtk_widget_set_hexpand(tabs_scroll, TRUE);
+    gtk_widget_set_vexpand(tabs_scroll, TRUE);
     gtk_widget_set_halign(tabs_scroll, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(tabs_scroll, GTK_ALIGN_FILL);
     gtk_widget_set_size_request(tabs_scroll, 100, -1);
 
     tab_box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -734,9 +736,11 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     gtk_widget_add_css_class(row, "tab-row");
     gtk_widget_set_margin_start(row, 4);
     gtk_widget_set_margin_end(row, 4);
-    gtk_widget_set_margin_top(row, 3);
-    gtk_widget_set_margin_bottom(row, 3);
+    gtk_widget_set_margin_top(row, 0);
+    gtk_widget_set_margin_bottom(row, 0);
     gtk_widget_set_hexpand(row, TRUE);
+    gtk_widget_set_vexpand(row, TRUE);
+    gtk_widget_set_valign(row, GTK_ALIGN_FILL);
 
     // #id etiketi (küçük, soluk)
     std::string id_str = "#" + std::to_string(tab->id);
@@ -1681,8 +1685,10 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
     GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_add_css_class(row, "tab-row");
     gtk_widget_set_margin_start(row, 4); gtk_widget_set_margin_end(row, 4);
-    gtk_widget_set_margin_top(row, 3);   gtk_widget_set_margin_bottom(row, 3);
+    gtk_widget_set_margin_top(row, 0);   gtk_widget_set_margin_bottom(row, 0);
     gtk_widget_set_hexpand(row, TRUE);
+    gtk_widget_set_vexpand(row, TRUE);
+    gtk_widget_set_valign(row, GTK_ALIGN_FILL);
 
     std::string id_str2 = "#" + std::to_string(tab->id);
     GtkWidget* id_label2 = gtk_label_new(id_str2.c_str());
@@ -2706,16 +2712,30 @@ void BrowserWindow::ShowSettingsPage() {
 
 // ── Favori sağ-tık bağlam menüsü ─────────────────────────────────────────────
 namespace ferzan {
+
 struct BmRenameCtx   { BrowserWindow* self; std::string url; std::string cur_title; };
-struct BmMoveCtx     { BrowserWindow* self; std::string url; };
 struct BmDelCtx      { BrowserWindow* self; std::string url; };
 struct BmSaveCtx     { BrowserWindow* self; std::string url; };
-struct BmMoveSaveCtx { BrowserWindow* self; std::string url; };
+struct BmMoveToCtx   { BrowserWindow* self; std::string url; std::string folder; };
+struct BmNewFolderCtx{ BrowserWindow* self; std::string url; };  // url boş = sadece klasör oluştur
+struct BmBarCtx      { BrowserWindow* self; };
 
-// Kaydet (isim değiştir)
+// ── Yardımcı: mevcut klasör listesini topla ──────────────────────────────────
+static std::vector<std::string> BmGetFolders() {
+    std::vector<std::string> folders;
+    for (const auto& bm : BookmarkManager::Get().All()) {
+        if (bm.folder.empty()) continue;
+        bool found = false;
+        for (auto& f : folders) if (f == bm.folder) { found = true; break; }
+        if (!found) folders.push_back(bm.folder);
+    }
+    return folders;
+}
+
+// ── Kaydet (isim değiştir) ───────────────────────────────────────────────────
 static void BmSaveCb(GtkButton* sb, gpointer) {
-    auto* sc = static_cast<BmSaveCtx*>(g_object_get_data(G_OBJECT(sb), "sctx"));
-    GtkWidget* ep = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(sb), "epop"));
+    auto* sc  = static_cast<BmSaveCtx*>(g_object_get_data(G_OBJECT(sb), "sctx"));
+    GtkWidget* ep  = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(sb), "epop"));
     GtkWidget* ent = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(ep), "entry_w"));
     const char* v = gtk_editable_get_text(GTK_EDITABLE(ent));
     BookmarkManager::Get().Rename(sc->url, v ? v : "");
@@ -2723,34 +2743,58 @@ static void BmSaveCb(GtkButton* sb, gpointer) {
     sc->self->RebuildBookmarksBar();
 }
 static void BmSaveEnterCb(GtkEntry* e, gpointer) {
-    auto* sc = static_cast<BmSaveCtx*>(g_object_get_data(G_OBJECT(e), "sctx"));
-    GtkWidget* ep = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(e), "epop"));
+    auto* sc  = static_cast<BmSaveCtx*>(g_object_get_data(G_OBJECT(e), "sctx"));
+    GtkWidget* ep  = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(e), "epop"));
     const char* v = gtk_editable_get_text(GTK_EDITABLE(e));
     BookmarkManager::Get().Rename(sc->url, v ? v : "");
     gtk_popover_popdown(GTK_POPOVER(ep));
     sc->self->RebuildBookmarksBar();
 }
 
-// Taşı (klasör)
-static void BmMoveSaveCb(GtkButton* sb, gpointer) {
-    auto* ms = static_cast<BmMoveSaveCtx*>(g_object_get_data(G_OBJECT(sb), "msctx"));
-    GtkWidget* fp = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(sb), "fpop"));
-    GtkWidget* fe = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(sb), "fentry_w"));
-    const char* v = gtk_editable_get_text(GTK_EDITABLE(fe));
-    BookmarkManager::Get().MoveToFolder(ms->url, v ? v : "");
-    gtk_popover_popdown(GTK_POPOVER(fp));
-    ms->self->RebuildBookmarksBar();
-}
-static void BmMoveEnterCb(GtkEntry* e, gpointer) {
-    auto* ms = static_cast<BmMoveSaveCtx*>(g_object_get_data(G_OBJECT(e), "msctx"));
-    GtkWidget* fp = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(e), "fpop"));
-    const char* v = gtk_editable_get_text(GTK_EDITABLE(e));
-    BookmarkManager::Get().MoveToFolder(ms->url, v ? v : "");
-    gtk_popover_popdown(GTK_POPOVER(fp));
-    ms->self->RebuildBookmarksBar();
+// ── Klasöre taşı (seçilmiş klasör adıyla) ───────────────────────────────────
+static void BmMoveToFolderCb(GtkButton* b, gpointer) {
+    auto* ctx = static_cast<BmMoveToCtx*>(g_object_get_data(G_OBJECT(b), "mtctx"));
+    GtkWidget* pp = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(b), "fpop"));
+    BookmarkManager::Get().MoveToFolder(ctx->url, ctx->folder);
+    if (pp) gtk_popover_popdown(GTK_POPOVER(pp));
+    ctx->self->RebuildBookmarksBar();
 }
 
-// İsim değiştir popover aç
+// ── Yeni klasör (entry + kaydet) ─────────────────────────────────────────────
+static void BmNewFolderSaveCb(GtkButton* sb, gpointer) {
+    auto* ctx = static_cast<BmNewFolderCtx*>(g_object_get_data(G_OBJECT(sb), "nfctx"));
+    GtkWidget* pp  = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(sb), "fpop"));
+    GtkWidget* ent = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(pp), "entry_w"));
+    const char* v = gtk_editable_get_text(GTK_EDITABLE(ent));
+    if (v && v[0] != '\0') {
+        if (!ctx->url.empty())
+            BookmarkManager::Get().MoveToFolder(ctx->url, v);
+    }
+    gtk_popover_popdown(GTK_POPOVER(pp));
+    ctx->self->RebuildBookmarksBar();
+}
+static void BmNewFolderEnterCb(GtkEntry* e, gpointer) {
+    auto* ctx = static_cast<BmNewFolderCtx*>(g_object_get_data(G_OBJECT(e), "nfctx"));
+    GtkWidget* pp  = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(e), "fpop"));
+    const char* v = gtk_editable_get_text(GTK_EDITABLE(e));
+    if (v && v[0] != '\0') {
+        if (!ctx->url.empty())
+            BookmarkManager::Get().MoveToFolder(ctx->url, v);
+    }
+    gtk_popover_popdown(GTK_POPOVER(pp));
+    ctx->self->RebuildBookmarksBar();
+}
+
+// ── Sil ──────────────────────────────────────────────────────────────────────
+static void BmDeleteClickCb(GtkButton* db, gpointer) {
+    auto* dc = static_cast<BmDelCtx*>(g_object_get_data(G_OBJECT(db), "dctx"));
+    GtkWidget* cp = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(db), "ctx_pop"));
+    BookmarkManager::Get().Remove(dc->url);
+    gtk_popover_popdown(GTK_POPOVER(cp));
+    dc->self->RebuildBookmarksBar();
+}
+
+// ── İsim değiştir popover ─────────────────────────────────────────────────────
 static void BmRenameClickCb(GtkButton* rb, gpointer ud) {
     auto* self2 = static_cast<BrowserWindow*>(ud);
     auto* rc    = static_cast<BmRenameCtx*>(g_object_get_data(G_OBJECT(rb), "rctx"));
@@ -2781,8 +2825,8 @@ static void BmRenameClickCb(GtkButton* rb, gpointer ud) {
     g_object_set_data(G_OBJECT(save_btn), "sctx", sc);
     g_object_set_data(G_OBJECT(save_btn), "epop", epop);
     g_object_set_data(G_OBJECT(epop), "entry_w", entry);
-    g_signal_connect(save_btn, "clicked", G_CALLBACK(BmSaveCb), nullptr);
-    g_signal_connect(entry, "activate",   G_CALLBACK(BmSaveEnterCb), nullptr);
+    g_signal_connect(save_btn, "clicked", G_CALLBACK(BmSaveCb),      nullptr);
+    g_signal_connect(entry,    "activate",G_CALLBACK(BmSaveEnterCb), nullptr);
 
     gtk_box_append(GTK_BOX(ebox), lbl);
     gtk_box_append(GTK_BOX(ebox), entry);
@@ -2791,72 +2835,95 @@ static void BmRenameClickCb(GtkButton* rb, gpointer ud) {
     gtk_popover_popup(GTK_POPOVER(epop));
 }
 
-// Klasöre taşı popover aç
+// ── Klasöre taşı popover (mevcut klasörler listesi + yeni klasör) ─────────────
 static void BmMoveClickCb(GtkButton* mb, gpointer ud) {
     auto* self2 = static_cast<BrowserWindow*>(ud);
-    auto* mc    = static_cast<BmMoveCtx*>(g_object_get_data(G_OBJECT(mb), "mctx"));
+    auto* mc_url_ptr = static_cast<std::string*>(g_object_get_data(G_OBJECT(mb), "mc-url"));
     GtkWidget* cp = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(mb), "ctx_pop"));
+    std::string bm_url = mc_url_ptr ? *mc_url_ptr : "";
     gtk_popover_popdown(GTK_POPOVER(cp));
 
     GtkWidget* fpop = gtk_popover_new();
     gtk_popover_set_has_arrow(GTK_POPOVER(fpop), FALSE);
     gtk_widget_set_parent(fpop, gtk_widget_get_parent(cp));
 
-    GtkWidget* fbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-    gtk_widget_set_margin_start(fbox, 10); gtk_widget_set_margin_end(fbox, 10);
-    gtk_widget_set_margin_top(fbox, 10);   gtk_widget_set_margin_bottom(fbox, 10);
+    GtkWidget* fbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_margin_start(fbox, 8); gtk_widget_set_margin_end(fbox, 8);
+    gtk_widget_set_margin_top(fbox, 8);   gtk_widget_set_margin_bottom(fbox, 8);
 
-    GtkWidget* flbl = gtk_label_new("Klasör adı (boş = kök):");
-    gtk_widget_set_halign(flbl, GTK_ALIGN_START);
-    GtkWidget* fentry = gtk_entry_new();
-    gtk_widget_set_size_request(fentry, 200, -1);
+    auto folders = BmGetFolders();
 
-    auto* msc = new BmMoveSaveCtx{ self2, mc->url };
-    g_object_set_data_full(G_OBJECT(fentry), "msctx", msc,
-        [](gpointer p){ delete static_cast<BmMoveSaveCtx*>(p); });
-    g_object_set_data(G_OBJECT(fentry), "fpop", fpop);
+    if (!folders.empty()) {
+        GtkWidget* sec_lbl = gtk_label_new("Klasör seç:");
+        gtk_widget_add_css_class(sec_lbl, "dim-label");
+        gtk_widget_set_halign(sec_lbl, GTK_ALIGN_START);
+        gtk_box_append(GTK_BOX(fbox), sec_lbl);
 
-    GtkWidget* fsave = gtk_button_new_with_label("Taşı");
-    gtk_widget_add_css_class(fsave, "suggested-action");
-    g_object_set_data(G_OBJECT(fsave), "msctx", msc);
-    g_object_set_data(G_OBJECT(fsave), "fpop",  fpop);
-    g_object_set_data(G_OBJECT(fsave), "fentry_w", fentry);
-    g_signal_connect(fsave,  "clicked",  G_CALLBACK(BmMoveSaveCb),  nullptr);
-    g_signal_connect(fentry, "activate", G_CALLBACK(BmMoveEnterCb), nullptr);
+        // Kök (klasörsüz) seçeneği
+        auto* root_ctx = new BmMoveToCtx{ self2, bm_url, "" };
+        GtkWidget* root_btn = gtk_button_new_with_label("— Kök (klasörsüz)");
+        gtk_widget_add_css_class(root_btn, "flat");
+        gtk_widget_set_halign(root_btn, GTK_ALIGN_FILL);
+        g_object_set_data_full(G_OBJECT(root_btn), "mtctx", root_ctx,
+            [](gpointer p){ delete static_cast<BmMoveToCtx*>(p); });
+        g_object_set_data(G_OBJECT(root_btn), "fpop", fpop);
+        g_signal_connect(root_btn, "clicked", G_CALLBACK(BmMoveToFolderCb), nullptr);
+        gtk_box_append(GTK_BOX(fbox), root_btn);
 
-    gtk_box_append(GTK_BOX(fbox), flbl);
-    gtk_box_append(GTK_BOX(fbox), fentry);
-    gtk_box_append(GTK_BOX(fbox), fsave);
+        for (const auto& f : folders) {
+            auto* fctx = new BmMoveToCtx{ self2, bm_url, f };
+            std::string flabel = "📁 " + f;
+            GtkWidget* fb = gtk_button_new_with_label(flabel.c_str());
+            gtk_widget_add_css_class(fb, "flat");
+            gtk_widget_set_halign(fb, GTK_ALIGN_FILL);
+            g_object_set_data_full(G_OBJECT(fb), "mtctx", fctx,
+                [](gpointer p){ delete static_cast<BmMoveToCtx*>(p); });
+            g_object_set_data(G_OBJECT(fb), "fpop", fpop);
+            g_signal_connect(fb, "clicked", G_CALLBACK(BmMoveToFolderCb), nullptr);
+            gtk_box_append(GTK_BOX(fbox), fb);
+        }
+        gtk_box_append(GTK_BOX(fbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+    }
+
+    // Yeni klasör oluştur
+    GtkWidget* new_lbl = gtk_label_new("Yeni klasör adı:");
+    gtk_widget_set_halign(new_lbl, GTK_ALIGN_START);
+    GtkWidget* new_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(new_entry), "Klasör adı…");
+    gtk_widget_set_size_request(new_entry, 190, -1);
+
+    auto* nfctx = new BmNewFolderCtx{ self2, bm_url };
+    g_object_set_data_full(G_OBJECT(new_entry), "nfctx", nfctx,
+        [](gpointer p){ delete static_cast<BmNewFolderCtx*>(p); });
+    g_object_set_data(G_OBJECT(new_entry), "fpop", fpop);
+    g_object_set_data(G_OBJECT(fpop), "entry_w", new_entry);
+
+    GtkWidget* new_save = gtk_button_new_with_label(bm_url.empty() ? "Oluştur" : "Oluştur ve Taşı");
+    gtk_widget_add_css_class(new_save, "suggested-action");
+    g_object_set_data(G_OBJECT(new_save), "nfctx", nfctx);
+    g_object_set_data(G_OBJECT(new_save), "fpop",  fpop);
+    g_signal_connect(new_save,  "clicked",  G_CALLBACK(BmNewFolderSaveCb),  nullptr);
+    g_signal_connect(new_entry, "activate", G_CALLBACK(BmNewFolderEnterCb), nullptr);
+
+    gtk_box_append(GTK_BOX(fbox), new_lbl);
+    gtk_box_append(GTK_BOX(fbox), new_entry);
+    gtk_box_append(GTK_BOX(fbox), new_save);
     gtk_popover_set_child(GTK_POPOVER(fpop), fbox);
     gtk_popover_popup(GTK_POPOVER(fpop));
 }
 
-// Sil
-static void BmDeleteClickCb(GtkButton* db, gpointer) {
-    auto* dc = static_cast<BmDelCtx*>(g_object_get_data(G_OBJECT(db), "dctx"));
-    GtkWidget* cp = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(db), "ctx_pop"));
-    BookmarkManager::Get().Remove(dc->url);
-    gtk_popover_popdown(GTK_POPOVER(cp));
-    dc->self->RebuildBookmarksBar();
-}
-
-// Sağ tık handler
-static void BmRightClickCb(GtkGestureClick* g, int, double, double, gpointer ud) {
-    auto* self = static_cast<BrowserWindow*>(ud);
-    GtkWidget* w = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
-    const char* url   = static_cast<const char*>(g_object_get_data(G_OBJECT(w), "bm-url"));
-    const char* title = static_cast<const char*>(g_object_get_data(G_OBJECT(w), "bm-title"));
-    if (!url) return;
-
+// ── Ortak: bağlam menüsü popup oluştur (url + title + parent widget) ─────────
+static void BmShowContextMenu(BrowserWindow* self, GtkWidget* parent_w,
+                               const std::string& url, const std::string& title) {
     GtkWidget* pop = gtk_popover_new();
     gtk_popover_set_has_arrow(GTK_POPOVER(pop), FALSE);
-    gtk_widget_set_parent(pop, w);
+    gtk_widget_set_parent(pop, parent_w);
 
     GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_widget_set_margin_start(vbox, 6); gtk_widget_set_margin_end(vbox, 6);
     gtk_widget_set_margin_top(vbox, 6);   gtk_widget_set_margin_bottom(vbox, 6);
 
-    std::string hdr(title ? title : url);
+    std::string hdr = title.empty() ? url : title;
     if (hdr.size() > 30) hdr = hdr.substr(0, 28) + "…";
     GtkWidget* hdr_lbl = gtk_label_new(hdr.c_str());
     gtk_widget_add_css_class(hdr_lbl, "dim-label");
@@ -2866,8 +2933,7 @@ static void BmRightClickCb(GtkGestureClick* g, int, double, double, gpointer ud)
     gtk_box_append(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
 
     // İsim değiştir
-    auto* rctx = new BmRenameCtx{ self, std::string(url),
-        std::string(title ? title : url) };
+    auto* rctx = new BmRenameCtx{ self, url, title.empty() ? url : title };
     GtkWidget* rename_btn = gtk_button_new_with_label("✏  İsim değiştir");
     gtk_widget_add_css_class(rename_btn, "flat");
     gtk_widget_set_halign(rename_btn, GTK_ALIGN_FILL);
@@ -2878,18 +2944,18 @@ static void BmRightClickCb(GtkGestureClick* g, int, double, double, gpointer ud)
     gtk_box_append(GTK_BOX(vbox), rename_btn);
 
     // Klasöre taşı
-    auto* mctx = new BmMoveCtx{ self, std::string(url) };
-    GtkWidget* move_btn = gtk_button_new_with_label("📁  Klasöre taşı");
+    auto* mc_url = new std::string(url);
+    GtkWidget* move_btn = gtk_button_new_with_label("📁  Klasöre taşı / yeni klasör");
     gtk_widget_add_css_class(move_btn, "flat");
     gtk_widget_set_halign(move_btn, GTK_ALIGN_FILL);
-    g_object_set_data_full(G_OBJECT(move_btn), "mctx", mctx,
-        [](gpointer p){ delete static_cast<BmMoveCtx*>(p); });
+    g_object_set_data_full(G_OBJECT(move_btn), "mc-url", mc_url,
+        [](gpointer p){ delete static_cast<std::string*>(p); });
     g_object_set_data(G_OBJECT(move_btn), "ctx_pop", pop);
     g_signal_connect(move_btn, "clicked", G_CALLBACK(BmMoveClickCb), self);
     gtk_box_append(GTK_BOX(vbox), move_btn);
 
     // Sil
-    auto* dctx = new BmDelCtx{ self, std::string(url) };
+    auto* dctx = new BmDelCtx{ self, url };
     GtkWidget* del_btn = gtk_button_new_with_label("🗑  Sil");
     gtk_widget_add_css_class(del_btn, "flat");
     gtk_widget_add_css_class(del_btn, "destructive-action");
@@ -2903,6 +2969,73 @@ static void BmRightClickCb(GtkGestureClick* g, int, double, double, gpointer ud)
     gtk_popover_set_child(GTK_POPOVER(pop), vbox);
     gtk_popover_popup(GTK_POPOVER(pop));
 }
+
+// ── Kök favori sağ tık ───────────────────────────────────────────────────────
+static void BmRightClickCb(GtkGestureClick* g, int, double, double, gpointer ud) {
+    auto* self = static_cast<BrowserWindow*>(ud);
+    GtkWidget* w = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
+    const char* url   = static_cast<const char*>(g_object_get_data(G_OBJECT(w), "bm-url"));
+    const char* title = static_cast<const char*>(g_object_get_data(G_OBJECT(w), "bm-title"));
+    if (!url) return;
+    BmShowContextMenu(self, w, std::string(url), title ? title : "");
+}
+
+// ── Klasör içi site sağ tık ──────────────────────────────────────────────────
+static void BmFolderItemRightClickCb(GtkGestureClick* g, int, double, double, gpointer ud) {
+    auto* self = static_cast<BrowserWindow*>(ud);
+    GtkWidget* w = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
+    const char* url   = static_cast<const char*>(g_object_get_data(G_OBJECT(w), "bm-url"));
+    const char* title = static_cast<const char*>(g_object_get_data(G_OBJECT(w), "bm-title"));
+    if (!url) return;
+    // Klasör popover'ı kapat
+    GtkWidget* p = gtk_widget_get_parent(w);
+    while (p && !GTK_IS_POPOVER(p)) p = gtk_widget_get_parent(p);
+    if (p) gtk_popover_popdown(GTK_POPOVER(p));
+    // Buton bar'daki klasör menu butonunu bul (grandparent of popover)
+    GtkWidget* anchor = p ? gtk_widget_get_parent(p) : w;
+    BmShowContextMenu(self, anchor ? anchor : w, std::string(url), title ? title : "");
+}
+
+// ── Favoriler bar'ı boş alan sağ tık → klasör oluştur ───────────────────────
+static void BmBarRightClickCb(GtkGestureClick* g, int, double, double, gpointer ud) {
+    auto* self = static_cast<BrowserWindow*>(ud);
+    GtkWidget* bar = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
+
+    GtkWidget* pop = gtk_popover_new();
+    gtk_popover_set_has_arrow(GTK_POPOVER(pop), FALSE);
+    gtk_widget_set_parent(pop, bar);
+
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_margin_start(vbox, 8); gtk_widget_set_margin_end(vbox, 8);
+    gtk_widget_set_margin_top(vbox, 8);   gtk_widget_set_margin_bottom(vbox, 8);
+
+    GtkWidget* title_lbl = gtk_label_new("Yeni klasör oluştur:");
+    gtk_widget_set_halign(title_lbl, GTK_ALIGN_START);
+    GtkWidget* entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Klasör adı…");
+    gtk_widget_set_size_request(entry, 190, -1);
+
+    // url="" → sadece klasör adı kaydedilecek (ilerki siteler bu klasöre taşınabilir)
+    auto* nfctx = new BmNewFolderCtx{ self, "" };
+    g_object_set_data_full(G_OBJECT(entry), "nfctx", nfctx,
+        [](gpointer p){ delete static_cast<BmNewFolderCtx*>(p); });
+    g_object_set_data(G_OBJECT(entry), "fpop", pop);
+    g_object_set_data(G_OBJECT(pop), "entry_w", entry);
+
+    GtkWidget* save_btn = gtk_button_new_with_label("Oluştur");
+    gtk_widget_add_css_class(save_btn, "suggested-action");
+    g_object_set_data(G_OBJECT(save_btn), "nfctx", nfctx);
+    g_object_set_data(G_OBJECT(save_btn), "fpop",  pop);
+    g_signal_connect(save_btn, "clicked",  G_CALLBACK(BmNewFolderSaveCb),  nullptr);
+    g_signal_connect(entry,    "activate", G_CALLBACK(BmNewFolderEnterCb), nullptr);
+
+    gtk_box_append(GTK_BOX(vbox), title_lbl);
+    gtk_box_append(GTK_BOX(vbox), entry);
+    gtk_box_append(GTK_BOX(vbox), save_btn);
+    gtk_popover_set_child(GTK_POPOVER(pop), vbox);
+    gtk_popover_popup(GTK_POPOVER(pop));
+}
+
 } // namespace ferzan
 
 void BrowserWindow::RebuildBookmarksBar() {
@@ -2947,12 +3080,14 @@ void BrowserWindow::RebuildBookmarksBar() {
         for (const auto& bm : bmarks) {
             if (bm.folder != folder) continue;
             std::string bl = bm.title.empty() ? bm.url : bm.title;
-            if (bl.size() > 32) bl = bl.substr(0, 30) + "…";
+            if (bl.size() > 32) bl = bl.substr(0, 30) + "\u2026";
             GtkWidget* item_btn = gtk_button_new_with_label(bl.c_str());
             gtk_widget_add_css_class(item_btn, "flat");
             gtk_widget_set_tooltip_text(item_btn, bm.url.c_str());
             g_object_set_data_full(G_OBJECT(item_btn), "bm-url",
                 g_strdup(bm.url.c_str()), g_free);
+            g_object_set_data_full(G_OBJECT(item_btn), "bm-title",
+                g_strdup((bm.title.empty() ? bm.url : bm.title).c_str()), g_free);
             g_signal_connect(item_btn, "clicked",
                 G_CALLBACK(+[](GtkButton* b, gpointer ud) {
                     auto* self = static_cast<BrowserWindow*>(ud);
@@ -2967,12 +3102,27 @@ void BrowserWindow::RebuildBookmarksBar() {
                     while (w && !GTK_IS_POPOVER(w)) w = gtk_widget_get_parent(w);
                     if (w) gtk_popover_popdown(GTK_POPOVER(w));
                 }), this);
+            // Sağ tık: düzenleme menüsü
+            GtkGesture* fi_rclick = gtk_gesture_click_new();
+            gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(fi_rclick), GDK_BUTTON_SECONDARY);
+            g_signal_connect(fi_rclick, "pressed",
+                G_CALLBACK(ferzan::BmFolderItemRightClickCb), this);
+            gtk_widget_add_controller(item_btn, GTK_EVENT_CONTROLLER(fi_rclick));
             gtk_box_append(GTK_BOX(pop_box), item_btn);
         }
 
         gtk_popover_set_child(GTK_POPOVER(pop), pop_box);
         gtk_menu_button_set_popover(GTK_MENU_BUTTON(folder_btn), pop);
         gtk_box_append(GTK_BOX(bookmarks_box_), folder_btn);
+    }
+
+    // Favoriler bar'ına sağ tık → klasör oluştur
+    {
+        GtkGesture* bar_rclick = gtk_gesture_click_new();
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(bar_rclick), GDK_BUTTON_SECONDARY);
+        g_signal_connect(bar_rclick, "pressed",
+            G_CALLBACK(ferzan::BmBarRightClickCb), this);
+        gtk_widget_add_controller(bookmarks_box_, GTK_EVENT_CONTROLLER(bar_rclick));
     }
 
     // Kök seviyesindeki favoriler (klasörsüz)
