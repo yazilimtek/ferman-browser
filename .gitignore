@@ -29,6 +29,7 @@ compile_commands.json
 # CEF binary dağıtımı (büyük, indirilebilir — projeye dahil değil)
 # İndirme: https://cef-builds.spotifycdn.com/index.html
 third_party/
+bootstrap-5.3.8-dist/
 
 # Geçici dosyalar
 *.tmp
