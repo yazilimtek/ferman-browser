@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace ferzan {
+namespace ferman {
 
 class BrowserWindow {
 public:
@@ -56,7 +56,7 @@ private:
     std::string BuildAdvancedSettingsHTML();
     std::string BuildHistoryHTML();
     std::string BuildAboutHTML();
-    void  HandleFerzanScheme(const std::string& uri);
+    void  HandlefermanScheme(const std::string& uri);
     void  SaveTabSession();
     void  RestoreTabSession();
     void  ShowFindBar();
@@ -77,6 +77,7 @@ private:
                           const std::string& api_url);
     void  AppendAiBubble(const std::string& role, const std::string& text);
     void  ShowAiLoading(bool show);
+    void  ShowAiQuickPopup(const std::string& title, const std::string& prompt);
     void  AddAttachmentChip(const std::string& path);
     std::string CollectAiInputText();
     void  ParseAndHighlightTokens();
@@ -170,9 +171,9 @@ private:
     Tab*              active_tab_ = nullptr;
     int               next_tab_id_ = 1;
 
-    static constexpr const char* kHomePage  = "ferzan://home";
-    static constexpr const char* kDefaultUrl = "ferzan://home";
-    static constexpr const char* kAppName    = "Ferzan Browser";
+    static constexpr const char* kHomePage  = "ferman://home";
+    static constexpr const char* kDefaultUrl = "ferman://home";
+    static constexpr const char* kAppName    = "Ferman Browser";
 };
 
-} // namespace ferzan
+} // namespace ferman

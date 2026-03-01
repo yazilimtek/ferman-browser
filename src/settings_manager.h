@@ -2,10 +2,10 @@
 #include <string>
 #include <vector>
 
-namespace ferzan {
+namespace ferman {
 
 struct Settings {
-    std::string homepage         = "ferzan://home";
+    std::string homepage         = "ferman://home";
     double      default_zoom     = 1.0;
     bool        javascript_enabled = true;
     bool        hardware_accel   = false;  // varsayılan NEVER (offset bug)
@@ -86,4 +86,4 @@ private:
     Settings    settings_;
 };
 
-} // namespace ferzan
+} // namespace ferman

@@ -8,7 +8,7 @@
 #include <sstream>
 #include <sys/stat.h>
 
-namespace ferzan {
+namespace ferman {
 
 // CDN URL pattern → local filename eşlemesi
 // Host prefix eşleştirmesi: URL host bu listedekilerden biriyle başlıyorsa intercept et
@@ -63,8 +63,8 @@ SessionManager& SessionManager::Get() {
 void SessionManager::EnsureDirs() {
     const char* home = g_get_home_dir();
 
-    data_dir_  = std::string(home) + "/.local/share/ferzan-browser";
-    cache_dir_ = std::string(home) + "/.cache/ferzan-browser";
+    data_dir_  = std::string(home) + "/.local/share/ferman-browser";
+    cache_dir_ = std::string(home) + "/.cache/ferman-browser";
     cdn_dir_   = cache_dir_ + "/cdn";
 
     for (const auto& d : { data_dir_, cache_dir_, cdn_dir_ }) {
@@ -72,11 +72,11 @@ void SessionManager::EnsureDirs() {
     }
 }
 
-// CDN intercept: "ferzan-cdn" URI şeması — doğrudan dosya servisi
+// CDN intercept: "ferman-cdn" URI şeması — doğrudan dosya servisi
 // WebKit content URI şeması üzerinden yerel CDN dosyaları sunulur.
 void SessionManager::SetupCdnScheme() {
-    // "ferzan-cdn://cdn/<filename>" → cdn_dir_/filename
-    webkit_web_context_register_uri_scheme(context_, "ferzan-cdn",
+    // "ferman-cdn://cdn/<filename>" → cdn_dir_/filename
+    webkit_web_context_register_uri_scheme(context_, "ferman-cdn",
         [](WebKitURISchemeRequest* request, gpointer ud) {
             auto* self = static_cast<SessionManager*>(ud);
             const char* path = webkit_uri_scheme_request_get_path(request);
@@ -148,4 +148,4 @@ void SessionManager::Init() {
     SetupCdnScheme();
 }
 
-} // namespace ferzan
+} // namespace ferman

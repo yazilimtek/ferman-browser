@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 
-namespace ferzan {
+namespace ferman {
 
 struct Bookmark {
     std::string url;
@@ -32,4 +32,4 @@ private:
     std::vector<Bookmark> bookmarks_;
 };
 
-} // namespace ferzan
+} // namespace ferman

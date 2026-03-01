@@ -14,7 +14,7 @@
 #include <zip.h>
 #endif
 
-namespace ferzan {
+namespace ferman {
 
 // ── Yardımcılar ───────────────────────────────────────────────────────────────
 
@@ -167,7 +167,7 @@ ExtractResult FileExtractor::ExtractPdf(const std::string& path) {
     r.text = out.str();
 #else
     // poppler yoksa pdftotext komutu ile dene
-    std::string tmp = "/tmp/ferzan_pdf_" + std::to_string((long)getpid()) + ".txt";
+    std::string tmp = "/tmp/ferman_pdf_" + std::to_string((long)getpid()) + ".txt";
     std::string cmd = "pdftotext -nopgbrk \"" + path + "\" \"" + tmp + "\" 2>/dev/null";
     if (system(cmd.c_str()) == 0) {
         std::ifstream f(tmp, std::ios::binary);
@@ -253,4 +253,4 @@ ExtractResult FileExtractor::ExtractImage(const std::string& path) {
     return r;
 }
 
-} // namespace ferzan
+} // namespace ferman

@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <cctype>
 
-namespace ferzan {
+namespace ferman {
 
 // ── Basit JSON yardımcıları ───────────────────────────────────────────────────
 
@@ -475,4 +475,4 @@ void AiManager::SendMessage(AiChat& chat,
         }, ctx);
 }
 
-} // namespace ferzan
+} // namespace ferman

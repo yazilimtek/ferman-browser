@@ -2,7 +2,7 @@
 #include <ctime>
 #include <stdexcept>
 
-namespace ferzan {
+namespace ferman {
 
 HistoryManager& HistoryManager::Get() {
     static HistoryManager inst;
@@ -94,4 +94,4 @@ void HistoryManager::Clear() {
     sqlite3_exec(db_, "DELETE FROM visits;", nullptr, nullptr, nullptr);
 }
 
-} // namespace ferzan
+} // namespace ferman

@@ -4,7 +4,7 @@
 #include <fstream>
 #include <sstream>
 
-namespace ferzan {
+namespace ferman {
 
 BookmarkManager& BookmarkManager::Get() {
     static BookmarkManager inst;
@@ -167,4 +167,4 @@ void BookmarkManager::Load() {
     }
 }
 
-} // namespace ferzan
+} // namespace ferman

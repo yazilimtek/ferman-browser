@@ -3,7 +3,7 @@
 #include <vector>
 #include <sqlite3.h>
 
-namespace ferzan {
+namespace ferman {
 
 struct HistoryEntry {
     int64_t     id;
@@ -27,4 +27,4 @@ private:
     sqlite3* db_ = nullptr;
 };
 
-} // namespace ferzan
+} // namespace ferman

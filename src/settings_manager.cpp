@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <ctime>
 
-namespace ferzan {
+namespace ferman {
 
 SettingsManager& SettingsManager::Get() {
     static SettingsManager inst;
@@ -172,4 +172,4 @@ void AiAgentStore::RemoveAgent(const std::string& id) {
     Save();
 }
 
-} // namespace ferzan
+} // namespace ferman

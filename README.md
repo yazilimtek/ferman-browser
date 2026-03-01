@@ -1,11 +1,11 @@
-# Ferzan Browser
+# Ferman Browser
 
-Ferzan Browser, GTK4 ve WebKitGTK kullanılarak C++20 ile yazılmış hafif, hızlı ve açık kaynaklı bir web tarayıcısıdır.
+Ferman Browser, GTK4 ve WebKitGTK kullanılarak C++20 ile yazılmış hafif, hızlı ve açık kaynaklı bir web tarayıcısıdır.
 
 ![Platform](https://img.shields.io/badge/platform-Linux-blue)
 ![Language](https://img.shields.io/badge/language-C%2B%2B20-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Build](https://img.shields.io/github/actions/workflow/status/pardusus/ferzan-browser/build.yml?branch=main)
+![Build](https://img.shields.io/github/actions/workflow/status/pardusus/ferman-browser/build.yml?branch=main)
 
 ## Özellikler
 
@@ -56,25 +56,60 @@ sudo dnf install \
 sudo pacman -S cmake gcc gtk4 webkitgtk-6.0 pkgconf
 ```
 
-## Derleme
+## Kurulum (Önerilen)
 
 ```bash
-git clone https://github.com/pardusus/ferzan-browser.git
-cd ferzan-browser
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+git clone https://github.com/pardusus/ferman-browser.git
+cd ferman-browser
+sudo ./install.sh
 ```
 
-## Çalıştırma
+Kaldırmak için:
 
 ```bash
-./build/ferzan-browser
+sudo ./install.sh --uninstall
+```
+
+Özel önek ile kurulum:
+
+```bash
+sudo ./install.sh --prefix /usr/local
+```
+
+## Manuel Derleme & Kurulum
+
+```bash
+git clone https://github.com/pardusus/ferman-browser.git
+cd ferman-browser
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+sudo cmake --install build --prefix /usr
+sudo gtk-update-icon-cache /usr/share/icons/hicolor
+sudo update-desktop-database /usr/share/applications
+```
+
+## Paket Oluşturma (.deb / .tar.gz)
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+cd build && cpack
+# → ferman-browser-1.0.0-linux-amd64.deb
+# → ferman-browser-1.0.0-linux-amd64.tar.gz
+```
+
+## Geliştirme Ortamında Çalıştırma
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j$(nproc)
+./build/ferman-browser
 ```
 
 ## Proje Yapısı
 
 ```
-ferzan-browser/
+ferman-browser/
 ├── CMakeLists.txt          # CMake yapılandırması
 ├── src/
 │   ├── main.cpp            # Giriş noktası — GtkApplication

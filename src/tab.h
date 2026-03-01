@@ -3,7 +3,7 @@
 #include <webkit/webkit.h>
 #include <string>
 
-namespace ferzan {
+namespace ferman {
 
 struct Tab {
     int         id        = 0;
@@ -15,4 +15,4 @@ struct Tab {
     std::string title;
 };
 
-} // namespace ferzan
+} // namespace ferman

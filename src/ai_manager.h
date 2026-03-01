@@ -4,7 +4,7 @@
 #include <functional>
 #include <cstdint>
 
-namespace ferzan {
+namespace ferman {
 
 struct AiMessage {
     std::string role;       // "user" | "assistant" | "system"
@@ -80,4 +80,4 @@ private:
     std::string data_dir_;
 };
 
-} // namespace ferzan
+} // namespace ferman

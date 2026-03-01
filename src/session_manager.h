@@ -2,10 +2,10 @@
 #include <webkit/webkit.h>
 #include <string>
 
-namespace ferzan {
+namespace ferman {
 
 // Kalıcı disk cache + oturum yöneticisi (singleton)
-// webkit_network_session_new ile ~/.local/share/ferzan-browser/ altında saklar.
+// webkit_network_session_new ile ~/.local/share/ferman-browser/ altında saklar.
 class SessionManager {
 public:
     static SessionManager& Get();
@@ -32,4 +32,4 @@ private:
     std::string cdn_dir_;
 };
 
-} // namespace ferzan
+} // namespace ferman

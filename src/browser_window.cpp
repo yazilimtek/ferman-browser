@@ -16,8 +16,14 @@
 
 static const char* kTabCSS = R"(
 .tab-row {
-    min-width: 120px;
+    min-width: 0;
     border-radius: 6px 6px 0 0;
+}
+.tab-row button,
+.tab-row button image,
+.tab-row label {
+    min-width: 0;
+    min-height: 0;
 }
 .tab-active {
     background-color: alpha(@window_bg_color, 0.92);
@@ -31,7 +37,7 @@ static const char* kTabCSS = R"(
     font-size: 0.78rem;
     font-weight: 700;
     opacity: 0.65;
-    min-width: 20px;
+    min-width: 0;
 }
 .status-bar {
     font-size: 0.75rem;
@@ -52,7 +58,7 @@ static const char* kTabCSS = R"(
 }
 )";
 
-namespace ferzan {
+namespace ferman {
 
 // ── Constructor ──────────────────────────────────────────────────────────────
 
@@ -62,6 +68,32 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_window_set_title(GTK_WINDOW(window_), kAppName);
     gtk_window_set_default_size(GTK_WINDOW(window_), 1280, 800);
     g_object_set_data(G_OBJECT(window_), "browser-window", this);
+
+    // Uygulama ikonu: kurulu sistemde hicolor temasından, geliştirmede dosyadan
+    gtk_window_set_icon_name(GTK_WINDOW(window_), "ferman-browser");
+    {
+        static bool icon_set = false;
+        if (!icon_set) {
+            // Geliştirme fallback: kaynak klasöründen oku
+            static const char* kIconPaths[] = {
+                "resources/favicon.png",
+                "resources/icons/512x512/apps/ferman-browser.png",
+                nullptr
+            };
+            for (int i = 0; kIconPaths[i]; ++i) {
+                GError* err = nullptr;
+                GdkPixbuf* pb = gdk_pixbuf_new_from_file(kIconPaths[i], &err);
+                if (pb) {
+                    gtk_window_set_default_icon_name("ferman-browser");
+                    g_object_unref(pb);
+                    icon_set = true;
+                    break;
+                }
+                if (err) g_error_free(err);
+            }
+            icon_set = true;
+        }
+    }
 
     // ── Modülleri başlat (sadece ilk pencerede init edilir) ──
     static bool modules_inited = false;
@@ -78,8 +110,8 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
 
         const char* home = g_get_home_dir();
         SessionManager::Get().Init();
-        std::string data_dir = std::string(home) + "/.local/share/ferzan-browser";
-        std::string cfg_dir  = std::string(home) + "/.config/ferzan-browser";
+        std::string data_dir = std::string(home) + "/.local/share/ferman-browser";
+        std::string cfg_dir  = std::string(home) + "/.config/ferman-browser";
         HistoryManager::Get().Init(data_dir + "/history.db");
         BookmarkManager::Get().Init(data_dir + "/bookmarks.json");
         SettingsManager::Get().Init(cfg_dir);
@@ -132,30 +164,22 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_box_append(GTK_BOX(nav_box_hdr), reload_btn_);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), nav_box_hdr);
 
-    // Tab çubuğu — pack_start ile sola yaslı (title_widget ortaladığı için kullanılmıyor)
-    GtkWidget* tabs_scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tabs_scroll),
-                                   GTK_POLICY_NEVER, GTK_POLICY_NEVER);
-    gtk_widget_set_hexpand(tabs_scroll, TRUE);
-    gtk_widget_set_vexpand(tabs_scroll, TRUE);
-    gtk_widget_set_halign(tabs_scroll, GTK_ALIGN_FILL);
-    gtk_widget_set_valign(tabs_scroll, GTK_ALIGN_FILL);
-    gtk_widget_set_size_request(tabs_scroll, 100, -1);
-
+    // Tab kutusu — doğrudan title_widget olarak eklenir,
+    // GTK4 header bar onu sol/sağ widget'lar arasındaki alana sıkıştırır
     tab_box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    gtk_box_set_homogeneous(GTK_BOX(tab_box_), TRUE);
     gtk_widget_set_halign(tab_box_, GTK_ALIGN_FILL);
     gtk_widget_set_hexpand(tab_box_, TRUE);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(tabs_scroll), tab_box_);
+    gtk_widget_set_vexpand(tab_box_, TRUE);
+    gtk_widget_set_valign(tab_box_, GTK_ALIGN_FILL);
+    gtk_widget_set_overflow(tab_box_, GTK_OVERFLOW_HIDDEN);
 
     new_tab_btn_ = gtk_button_new_from_icon_name("list-add-symbolic");
     gtk_widget_set_tooltip_text(new_tab_btn_, "Yeni sekme");
     gtk_widget_add_css_class(new_tab_btn_, "flat");
 
-    // Tab alanı: sadece scroll — pack_start ile sola yaslı
-    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), tabs_scroll);
-    // title_widget boş (ortalama placeholder kaldırıldı)
-    gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header),
-        gtk_label_new(nullptr));
+    // tab_box_'u title_widget olarak ayarla — header sınırları içinde daralır
+    gtk_header_bar_set_title_widget(GTK_HEADER_BAR(header), tab_box_);
 
     // ── Hamburger menü (sağ) ──
     GMenu* menu_model = g_menu_new();
@@ -734,11 +758,11 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     // Tab satırı: [#id] [favicon] [başlık] [kapat]
     GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_add_css_class(row, "tab-row");
-    gtk_widget_set_margin_start(row, 4);
-    gtk_widget_set_margin_end(row, 4);
+    gtk_widget_set_margin_start(row, 2);
+    gtk_widget_set_margin_end(row, 2);
     gtk_widget_set_margin_top(row, 0);
     gtk_widget_set_margin_bottom(row, 0);
-    gtk_widget_set_hexpand(row, TRUE);
+    gtk_widget_set_hexpand(row, FALSE);
     gtk_widget_set_vexpand(row, TRUE);
     gtk_widget_set_valign(row, GTK_ALIGN_FILL);
 
@@ -756,18 +780,21 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     gtk_widget_set_hexpand(tab->favicon, FALSE);
     gtk_widget_set_visible(tab->favicon, FALSE);
 
-    // Tab başlığı etiketi — sola yaslı
+    // Tab başlığı etiketi — sola yaslı, hexpand ile kapat butonu sağa itilir
     tab->label = gtk_label_new("Yeni Sekme");
+    gtk_label_set_width_chars(GTK_LABEL(tab->label), 1);
     gtk_label_set_max_width_chars(GTK_LABEL(tab->label), 16);
     gtk_label_set_ellipsize(GTK_LABEL(tab->label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_hexpand(tab->label, TRUE);
-    gtk_widget_set_halign(tab->label, GTK_ALIGN_START);
+    gtk_widget_set_halign(tab->label, GTK_ALIGN_FILL);
     gtk_label_set_xalign(GTK_LABEL(tab->label), 0.0f);
 
     GtkWidget* close_btn = gtk_button_new_from_icon_name("window-close-symbolic");
     gtk_widget_add_css_class(close_btn, "flat");
     gtk_widget_add_css_class(close_btn, "circular");
     gtk_widget_set_focus_on_click(close_btn, FALSE);
+    gtk_widget_set_hexpand(close_btn, FALSE);
+    gtk_widget_set_halign(close_btn, GTK_ALIGN_END);
     gtk_widget_set_tooltip_text(close_btn, "Sekmeyi kapat");
     g_object_set_data(G_OBJECT(close_btn), "tab", tab);
     g_signal_connect(close_btn, "clicked", G_CALLBACK(+[](GtkButton* btn, gpointer ud) {
@@ -1066,7 +1093,7 @@ void BrowserWindow::OnLoadChanged(WebKitWebView* wv, WebKitLoadEvent event) {
         const char* uri   = webkit_web_view_get_uri(wv);
         const char* title = webkit_web_view_get_title(wv);
         if (uri && *uri &&
-            strncmp(uri, "ferzan://", 9) != 0 &&
+            strncmp(uri, "ferman://", 9) != 0 &&
             strncmp(uri, "about:",   6) != 0) {
             HistoryManager::Get().AddVisit(
                 uri, title ? title : "");
@@ -1365,7 +1392,7 @@ void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud
         }
     }
     else if (!g_strcmp0(name, "show-history"))
-        self->NewTab("ferzan://gecmis");
+        self->NewTab("ferman://gecmis");
     else if (!g_strcmp0(name, "show-downloads"))
         DownloadManager::Get().ShowPanel();
     else if (!g_strcmp0(name, "toggle-bookmarks-bar"))
@@ -1464,8 +1491,8 @@ void BrowserWindow::OnMenuActionCb(GSimpleAction* action, GVariant*, gpointer ud
         else
             gtk_window_fullscreen(GTK_WINDOW(self->window_));
     }
-    else if (!g_strcmp0(name, "settings"))  self->NewTab("ferzan://ayarlar");
-    else if (!g_strcmp0(name, "about"))     self->NewTab("ferzan://ayarlar/hakkimizda");
+    else if (!g_strcmp0(name, "settings"))  self->NewTab("ferman://ayarlar");
+    else if (!g_strcmp0(name, "about"))     self->NewTab("ferman://ayarlar/hakkimizda");
 }
 
 // ── Yeni pencere aç ─────────────────────────────────────────────────────────
@@ -1520,14 +1547,14 @@ bool BrowserWindow::OnDecidePolicy(WebKitWebView* wv,
 
     if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) return false;
 
-    // ferzan:// dahili sayfaları intercept et
+    // ferman:// dahili sayfaları intercept et
     {
         WebKitNavigationPolicyDecision* nd = WEBKIT_NAVIGATION_POLICY_DECISION(dec);
         WebKitNavigationAction* na = webkit_navigation_policy_decision_get_navigation_action(nd);
         WebKitURIRequest* req = webkit_navigation_action_get_request(na);
         const char* req_uri = webkit_uri_request_get_uri(req);
-        if (req_uri && g_str_has_prefix(req_uri, "ferzan://") &&
-            !g_str_has_prefix(req_uri, "ferzan://home")) {
+        if (req_uri && g_str_has_prefix(req_uri, "ferman://") &&
+            !g_str_has_prefix(req_uri, "ferman://home")) {
             webkit_policy_decision_ignore(dec);
             // idle'da çağır: tab yaratıldıktan sonra wv active_tab ile eşleşsin
             struct Ctx { BrowserWindow* self; std::string uri; };
@@ -1535,7 +1562,7 @@ bool BrowserWindow::OnDecidePolicy(WebKitWebView* wv,
             g_idle_add([](gpointer ud) -> gboolean {
                 auto* c = static_cast<Ctx*>(ud);
                 // TabForWebView ile doğru tabı bul
-                c->self->HandleFerzanScheme(c->uri);
+                c->self->HandlefermanScheme(c->uri);
                 delete c;
                 return G_SOURCE_REMOVE;
             }, ctx);
@@ -1570,54 +1597,143 @@ bool BrowserWindow::OnDecidePolicy(WebKitWebView* wv,
 bool BrowserWindow::OnContextMenu(WebKitWebView* wv,
                                    WebKitContextMenu* menu,
                                    WebKitHitTestResult* hit) {
-    // Önce stock "Yeni Sekmede Aç" / "Yeni Pencerede Aç" öğelerini temizle
-    // (WebKit bunları zaten ekliyor; biz custom ekleyeceğiz — tekrar oluşmasın)
-    GList* items = webkit_context_menu_get_items(menu);
-    GList* to_remove = nullptr;
-    for (GList* l = items; l; l = l->next) {
-        auto* it = static_cast<WebKitContextMenuItem*>(l->data);
-        WebKitContextMenuAction act = webkit_context_menu_item_get_stock_action(it);
-        if (act == WEBKIT_CONTEXT_MENU_ACTION_OPEN_LINK_IN_NEW_WINDOW)
-            to_remove = g_list_prepend(to_remove, it);
+    // Kaldırılacak stock öğeler: tekrarlananlar veya istemediğimiz eylemler
+    static const WebKitContextMenuAction kRemove[] = {
+        WEBKIT_CONTEXT_MENU_ACTION_OPEN_LINK_IN_NEW_WINDOW,
+        WEBKIT_CONTEXT_MENU_ACTION_OPEN_IMAGE_IN_NEW_WINDOW,
+        WEBKIT_CONTEXT_MENU_ACTION_OPEN_FRAME_IN_NEW_WINDOW,
+        WEBKIT_CONTEXT_MENU_ACTION_OPEN_VIDEO_IN_NEW_WINDOW,
+        WEBKIT_CONTEXT_MENU_ACTION_OPEN_AUDIO_IN_NEW_WINDOW,
+    };
+    {
+        GList* items = webkit_context_menu_get_items(menu);
+        GList* to_rm = nullptr;
+        for (GList* l = items; l; l = l->next) {
+            auto* it = static_cast<WebKitContextMenuItem*>(l->data);
+            WebKitContextMenuAction act = webkit_context_menu_item_get_stock_action(it);
+            for (auto bad : kRemove)
+                if (act == bad) { to_rm = g_list_prepend(to_rm, it); break; }
+        }
+        for (GList* l = to_rm; l; l = l->next)
+            webkit_context_menu_remove(menu, static_cast<WebKitContextMenuItem*>(l->data));
+        g_list_free(to_rm);
     }
-    for (GList* l = to_remove; l; l = l->next)
-        webkit_context_menu_remove(menu, static_cast<WebKitContextMenuItem*>(l->data));
-    g_list_free(to_remove);
 
-    if (!webkit_hit_test_result_context_is_link(hit)) return false;
+    // ── Bağlantı üzerindeyse: Yeni Sekmede / Yeni Pencerede Aç ──────────────
+    if (webkit_hit_test_result_context_is_link(hit)) {
+        const char* link_uri = webkit_hit_test_result_get_link_uri(hit);
+        if (link_uri && *link_uri) {
+            if (webkit_context_menu_get_n_items(menu) > 0)
+                webkit_context_menu_append(menu, webkit_context_menu_item_new_separator());
 
-    const char* link_uri = webkit_hit_test_result_get_link_uri(hit);
-    if (!link_uri || !*link_uri) return false;
+            GSimpleAction* act_tab = g_simple_action_new("ctx-open-tab", G_VARIANT_TYPE_STRING);
+            g_signal_connect(act_tab, "activate",
+                G_CALLBACK(+[](GSimpleAction*, GVariant* p, gpointer ud) {
+                    const char* u = g_variant_get_string(p, nullptr);
+                    if (u && *u) static_cast<BrowserWindow*>(ud)->NewTab(u);
+                }), this);
+            webkit_context_menu_append(menu,
+                webkit_context_menu_item_new_from_gaction(
+                    G_ACTION(act_tab), "Yeni Sekmede Aç",
+                    g_variant_new_string(link_uri)));
+            g_object_unref(act_tab);
 
-    // Ayraç
+            GSimpleAction* act_win = g_simple_action_new("ctx-open-win", G_VARIANT_TYPE_STRING);
+            g_signal_connect(act_win, "activate",
+                G_CALLBACK(+[](GSimpleAction*, GVariant* p, gpointer ud) {
+                    const char* u = g_variant_get_string(p, nullptr);
+                    if (u && *u) static_cast<BrowserWindow*>(ud)->OpenInNewWindow(u);
+                }), this);
+            webkit_context_menu_append(menu,
+                webkit_context_menu_item_new_from_gaction(
+                    G_ACTION(act_win), "Yeni Pencerede Aç",
+                    g_variant_new_string(link_uri)));
+            g_object_unref(act_win);
+        }
+    }
+
+    // ── Seçili metin üzerindeyse: Yapay Zeka ile Çevir ───────────────────────
+    if (webkit_hit_test_result_context_is_selection(hit)) {
+        // Seçili metni JS ile al, AI'ya gönder, popup'ta göster
+        if (webkit_context_menu_get_n_items(menu) > 0)
+            webkit_context_menu_append(menu, webkit_context_menu_item_new_separator());
+
+        GSimpleAction* act_tr = g_simple_action_new("ctx-ai-translate", nullptr);
+        g_signal_connect(act_tr, "activate",
+            G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer ud) {
+                auto* self = static_cast<BrowserWindow*>(ud);
+                if (!self->active_tab_ || !self->active_tab_->webview) return;
+                webkit_web_view_evaluate_javascript(
+                    WEBKIT_WEB_VIEW(self->active_tab_->webview),
+                    "window.getSelection().toString()", -1,
+                    nullptr, nullptr, nullptr,
+                    [](GObject* obj, GAsyncResult* res, gpointer ud2) {
+                        auto* self2 = static_cast<BrowserWindow*>(ud2);
+                        GError* err = nullptr;
+                        JSCValue* val = webkit_web_view_evaluate_javascript_finish(
+                            WEBKIT_WEB_VIEW(obj), res, &err);
+                        if (err) { g_error_free(err); return; }
+                        char* sel_text = jsc_value_to_string(val);
+                        g_object_unref(val);
+                        if (!sel_text || sel_text[0] == '\0') { g_free(sel_text); return; }
+                        std::string prompt = std::string(
+                            "Aşağıdaki metni Türkçe'ye çevir. "
+                            "Sadece çeviriyi yaz, başka hiçbir şey ekleme:\n\n") + sel_text;
+                        g_free(sel_text);
+                        self2->ShowAiQuickPopup("Çeviri", prompt);
+                    }, self);
+            }), this);
+        webkit_context_menu_append(menu,
+            webkit_context_menu_item_new_from_gaction(
+                G_ACTION(act_tr), "Yapay Zeka ile Çevir", nullptr));
+        g_object_unref(act_tr);
+    }
+
+    // ── Her durumda: Sayfayı Özetle ──────────────────────────────────────────
     if (webkit_context_menu_get_n_items(menu) > 0)
         webkit_context_menu_append(menu, webkit_context_menu_item_new_separator());
 
-    // "Yeni Sekmede Aç"
-    GSimpleAction* open_tab_act = g_simple_action_new("open-in-new-tab", G_VARIANT_TYPE_STRING);
-    g_signal_connect(open_tab_act, "activate",
-        G_CALLBACK(+[](GSimpleAction*, GVariant* param, gpointer ud) {
-            const char* uri = g_variant_get_string(param, nullptr);
-            if (uri && *uri) static_cast<BrowserWindow*>(ud)->NewTab(uri);
+    GSimpleAction* act_sum = g_simple_action_new("ctx-ai-summarize", nullptr);
+    g_signal_connect(act_sum, "activate",
+        G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer ud) {
+            auto* self = static_cast<BrowserWindow*>(ud);
+            if (!self->active_tab_ || !self->active_tab_->webview) return;
+            // Reklamları ve gereksiz öğeleri soyarak sayfa metnini al
+            const char* js =
+                "(function(){"
+                "  var sel=['script','style','nav','header','footer',"
+                "    'aside','iframe','noscript','form','button',"
+                "    '[class*=\"ad\"]','[id*=\"ad\"]','[class*=\"banner\"]',"
+                "    '[class*=\"cookie\"]','[class*=\"popup\"]','[class*=\"modal\"]'];"
+                "  var clone=document.body.cloneNode(true);"
+                "  sel.forEach(function(s){"
+                "    clone.querySelectorAll(s).forEach(function(e){e.remove();});"
+                "  });"
+                "  return (clone.innerText||clone.textContent||'').trim().slice(0,6000);"
+                "})()";
+            webkit_web_view_evaluate_javascript(
+                WEBKIT_WEB_VIEW(self->active_tab_->webview),
+                js, -1, nullptr, nullptr, nullptr,
+                [](GObject* obj, GAsyncResult* res, gpointer ud2) {
+                    auto* self2 = static_cast<BrowserWindow*>(ud2);
+                    GError* err = nullptr;
+                    JSCValue* val = webkit_web_view_evaluate_javascript_finish(
+                        WEBKIT_WEB_VIEW(obj), res, &err);
+                    if (err) { g_error_free(err); return; }
+                    char* txt = jsc_value_to_string(val);
+                    g_object_unref(val);
+                    if (!txt || txt[0] == '\0') { g_free(txt); return; }
+                    std::string prompt = std::string(
+                        "Aşağıdaki sayfa içeriğini Türkçe olarak kısa ve öz şekilde özetle. "
+                        "Maddeler halinde, en fazla 8 madde:\n\n") + txt;
+                    g_free(txt);
+                    self2->ShowAiQuickPopup("Sayfa Özeti", prompt);
+                }, self);
         }), this);
     webkit_context_menu_append(menu,
         webkit_context_menu_item_new_from_gaction(
-            G_ACTION(open_tab_act), "Yeni Sekmede Aç",
-            g_variant_new_string(link_uri)));
-    g_object_unref(open_tab_act);
-
-    // "Yeni Pencerede Aç"
-    GSimpleAction* open_win_act = g_simple_action_new("open-in-new-window-ctx", G_VARIANT_TYPE_STRING);
-    g_signal_connect(open_win_act, "activate",
-        G_CALLBACK(+[](GSimpleAction*, GVariant* param, gpointer ud) {
-            const char* uri = g_variant_get_string(param, nullptr);
-            if (uri && *uri) static_cast<BrowserWindow*>(ud)->OpenInNewWindow(uri);
-        }), this);
-    webkit_context_menu_append(menu,
-        webkit_context_menu_item_new_from_gaction(
-            G_ACTION(open_win_act), "Yeni Pencerede Aç",
-            g_variant_new_string(link_uri)));
-    g_object_unref(open_win_act);
+            G_ACTION(act_sum), "Sayfayı Özetle (AI)", nullptr));
+    g_object_unref(act_sum);
 
     return false;
 }
@@ -1684,7 +1800,7 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
     // Tab UI satırı
     GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     gtk_widget_add_css_class(row, "tab-row");
-    gtk_widget_set_margin_start(row, 4); gtk_widget_set_margin_end(row, 4);
+    gtk_widget_set_margin_start(row, 2); gtk_widget_set_margin_end(row, 2);
     gtk_widget_set_margin_top(row, 0);   gtk_widget_set_margin_bottom(row, 0);
     gtk_widget_set_hexpand(row, TRUE);
     gtk_widget_set_vexpand(row, TRUE);
@@ -1703,16 +1819,19 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
     gtk_widget_set_visible(tab->favicon, FALSE);
 
     tab->label = gtk_label_new("Yeni Sekme");
+    gtk_label_set_width_chars(GTK_LABEL(tab->label), 1);
     gtk_label_set_max_width_chars(GTK_LABEL(tab->label), 16);
     gtk_label_set_ellipsize(GTK_LABEL(tab->label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_hexpand(tab->label, TRUE);
-    gtk_widget_set_halign(tab->label, GTK_ALIGN_START);
+    gtk_widget_set_halign(tab->label, GTK_ALIGN_FILL);
     gtk_label_set_xalign(GTK_LABEL(tab->label), 0.0f);
 
     GtkWidget* close_btn = gtk_button_new_from_icon_name("window-close-symbolic");
     gtk_widget_add_css_class(close_btn, "flat");
     gtk_widget_add_css_class(close_btn, "circular");
     gtk_widget_set_focus_on_click(close_btn, FALSE);
+    gtk_widget_set_hexpand(close_btn, FALSE);
+    gtk_widget_set_halign(close_btn, GTK_ALIGN_END);
     gtk_widget_set_tooltip_text(close_btn, "Sekmeyi kapat");
     g_object_set_data(G_OBJECT(close_btn), "tab", tab);
     g_signal_connect(close_btn, "clicked",
@@ -1792,7 +1911,7 @@ std::string BrowserWindow::BuildHomeHTML() {
     std::string placeholder = se_name + "'da ara veya adres gir...";
 
     return R"html(<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8">
-<title>Ferzan Browser</title><style>
+<title>Ferman Browser</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);
@@ -1824,7 +1943,7 @@ border-radius:14px;display:flex;align-items:center;justify-content:center;
 font-size:1.4rem;border:1px solid rgba(255,255,255,.1)}
 .sc span{font-size:.75rem}
 </style></head><body>
-<div class="logo">Ferzan Browser</div>
+<div class="logo">Ferman Browser</div>
 <div class="tagline">H&#305;zl&#305;, hafif, &#246;zg&#252;r</div>
 <form class="search-box" onsubmit="doSearch(event)">
 <span class="si">&#128269;</span>
@@ -1905,14 +2024,14 @@ static std::string SettingsSidebarNav(const std::string& active) {
         return active == id ? " class=\"active\"" : "";
     };
     return
-        "<a href=\"ferzan://ayarlar/genel\""     + a("genel")     + ">🔧 Genel</a>"
-        "<a href=\"ferzan://ayarlar/gorunum\""    + a("gorunum")   + ">🎨 Görünüm</a>"
-        "<a href=\"ferzan://ayarlar/sekmeler\""   + a("sekmeler")  + ">📑 Sekmeler</a>"
-        "<a href=\"ferzan://ayarlar/gizlilik\""   + a("gizlilik")   + ">🔒 Gizlilik</a>"
-        "<a href=\"ferzan://ayarlar/gelismis\""   + a("gelismis")   + ">⚙ Gelişmiş</a>"
-        "<a href=\"ferzan://ayarlar/yapay-zeka\"" + a("yapay-zeka") + ">🤖 Yapay Zeka</a>"
+        "<a href=\"ferman://ayarlar/genel\""     + a("genel")     + ">🔧 Genel</a>"
+        "<a href=\"ferman://ayarlar/gorunum\""    + a("gorunum")   + ">🎨 Görünüm</a>"
+        "<a href=\"ferman://ayarlar/sekmeler\""   + a("sekmeler")  + ">📑 Sekmeler</a>"
+        "<a href=\"ferman://ayarlar/gizlilik\""   + a("gizlilik")   + ">🔒 Gizlilik</a>"
+        "<a href=\"ferman://ayarlar/gelismis\""   + a("gelismis")   + ">⚙ Gelişmiş</a>"
+        "<a href=\"ferman://ayarlar/yapay-zeka\"" + a("yapay-zeka") + ">🤖 Yapay Zeka</a>"
         "<div class=\"divider\"></div>"
-        "<a href=\"ferzan://ayarlar/hakkimizda\"" + a("hakkimizda") + ">ℹ Hakkımızda</a>";
+        "<a href=\"ferman://ayarlar/hakkimizda\"" + a("hakkimizda") + ">ℹ Hakkımızda</a>";
 }
 
 std::string BrowserWindow::BuildSettingsHTML(const std::string& page) {
@@ -2051,7 +2170,7 @@ function showToast(msg, ok){
 }
 function pickFolder(){
   var cur=document.getElementById('dldir').value||'';
-  window.location.href='ferzan://pick-download-dir?cur='+encodeURIComponent(cur);
+  window.location.href='ferman://pick-download-dir?cur='+encodeURIComponent(cur);
 }
 function save(e){e.preventDefault();
   try {
@@ -2064,7 +2183,7 @@ function save(e){e.preventDefault();
     var histdays=document.getElementById('histdays').value;
     var maxtabs=document.getElementById('maxtabs').value;
     var restore=document.getElementById('restore').checked?1:0;
-    window.location.href='ferzan://ayarlar-kaydet?hp='+encodeURIComponent(hp)
+    window.location.href='ferman://ayarlar-kaydet?hp='+encodeURIComponent(hp)
       +'&zoom='+zoom+'&js='+js+'&hw='+hw+'&se='+se
       +'&dldir='+encodeURIComponent(dldir)
       +'&histdays='+histdays+'&maxtabs='+maxtabs+'&restore='+restore;
@@ -2121,7 +2240,7 @@ padding:10px 24px;font-size:.9rem;font-weight:700;cursor:pointer;transition:back
       <span class="info-icon">💾</span>
       <div class="info-text">
         <strong>Önbellek</strong>
-        <span>Sayfa önbelleği <code>~/.cache/ferzan-browser</code> konumunda tutulur.</span>
+        <span>Sayfa önbelleği <code>~/.cache/ferman-browser</code> konumunda tutulur.</span>
       </div>
     </div>
     <div class="info-item">
@@ -2168,7 +2287,7 @@ padding:9px 24px;font-size:.9rem;font-weight:600;cursor:pointer">Temizle</button
 <script>
 function showConfirm(){document.getElementById('overlay').style.display='flex';}
 function hideConfirm(){document.getElementById('overlay').style.display='none';}
-function doClean(){window.location.href='ferzan://gecmis-temizle';}
+function doClean(){window.location.href='ferman://gecmis-temizle';}
 </script>
 </body></html>)css";
 }
@@ -2243,7 +2362,7 @@ padding:9px 24px;font-size:.9rem;font-weight:600;cursor:pointer}
 <script>
 function showConfirm(){document.getElementById('overlay').classList.add('show');}
 function hideConfirm(){document.getElementById('overlay').classList.remove('show');}
-function doClean(){window.location.href='ferzan://gecmis-temizle';}
+function doClean(){window.location.href='ferman://gecmis-temizle';}
 </script>
 </body></html>)html";
 }
@@ -2273,7 +2392,7 @@ border-radius:8px;padding:8px 18px;font-size:.82rem;color:rgba(255,255,255,.75)}
 .copy{font-size:.78rem;color:rgba(255,255,255,.28);margin-top:32px}
 </style></head><body>
 <div class="card">
-  <div class="logo">Ferzan Browser</div>
+  <div class="logo">Ferman Browser</div>
   <div class="version">Sürüm 0.3.0 — Şubat 2026</div>
   <div class="badges">
     <span class="badge">GTK4</span>
@@ -2285,9 +2404,9 @@ border-radius:8px;padding:8px 18px;font-size:.82rem;color:rgba(255,255,255,.75)}
   Kalıcı oturum, akıllı önbellek, geçmiş, yer imleri<br>ve özelleştirilebilir ayarlar ile geliştirilmiştir.</p>
   <div class="links">
     <a class="link" href="https://github.com">Kaynak Kodu</a>
-    <a class="link" href="ferzan://ayarlar">Ayarlar</a>
+    <a class="link" href="ferman://ayarlar">Ayarlar</a>
   </div>
-  <div class="copy">&copy; 2026 Ferzan Project — MIT Lisansı</div>
+  <div class="copy">&copy; 2026 ferman Project — MIT Lisansı</div>
 </div>
 </body></html>)html";
 }
@@ -2359,7 +2478,7 @@ function saveApp(e){
     var zoom=document.getElementById('zoom').value;
     var fontsize=document.getElementById('fontsize').value;
     var minfont=document.getElementById('minfont').value;
-    window.location.href='ferzan://ayarlar-kaydet?zoom='+zoom
+    window.location.href='ferman://ayarlar-kaydet?zoom='+zoom
       +'&fontsize='+fontsize+'&minfont='+minfont;
     toast('Görünüm ayarları kaydedildi.',true);
   }catch(err){toast('Hata oluştu!',false);}
@@ -2398,7 +2517,7 @@ std::string BrowserWindow::BuildTabsSettingsHTML() {
     </div>
     <div class="row">
       <label>Yeni Sekme Sayfası</label>
-      <input type="text" id="newtab" placeholder="ferzan://home"
+      <input type="text" id="newtab" placeholder="ferman://home"
         value=")css" + p.homepage + R"css(">
     </div>
   </div>
@@ -2428,7 +2547,7 @@ function saveTab(e){
     var maxtabs=document.getElementById('maxtabs').value;
     var restore=document.getElementById('restore').checked?1:0;
     var hp=document.getElementById('newtab').value;
-    window.location.href='ferzan://ayarlar-kaydet?maxtabs='+maxtabs
+    window.location.href='ferman://ayarlar-kaydet?maxtabs='+maxtabs
       +'&restore='+restore+'&hp='+encodeURIComponent(hp);
     toast('Sekme ayarları kaydedildi.',true);
   }catch(err){toast('Hata oluştu!',false);}
@@ -2524,7 +2643,7 @@ function saveAdv(e){
     var hw=document.getElementById('hw').checked?1:0;
     var dldir=document.getElementById('dldir').value;
     var histdays=document.getElementById('histdays').value;
-    window.location.href='ferzan://ayarlar-kaydet?js='+js+'&hw='+hw
+    window.location.href='ferman://ayarlar-kaydet?js='+js+'&hw='+hw
       +'&dldir='+encodeURIComponent(dldir)+'&histdays='+histdays;
     toast('Gelişmiş ayarlar kaydedildi.',true);
   }catch(err){toast('Hata oluştu!',false);}
@@ -2676,7 +2795,7 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
         "  var model=document.getElementById('amodel').value.trim();\n"
         "  var url=document.getElementById('aurl').value.trim();\n"
         "  if(!name){toast('Ajan ismi gerekli!',false);return;}\n"
-        "  window.location.href='ferzan://ai-ajan-kaydet'"
+        "  window.location.href='ferman://ai-ajan-kaydet'"
         "    +'?id='+encodeURIComponent(id)"
         "    +'&name='+encodeURIComponent(name)"
         "    +'&key='+encodeURIComponent(key)"
@@ -2694,7 +2813,7 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
         "}\n"
         "function delAgent(id){\n"
         "  if(confirm('Bu ajan\\u0131 silmek istedi\\u011finizden emin misiniz?'))\n"
-        "    window.location.href='ferzan://ai-ajan-sil?id='+encodeURIComponent(id);\n"
+        "    window.location.href='ferman://ai-ajan-sil?id='+encodeURIComponent(id);\n"
         "}\n"
         "function resetForm(){\n"
         "  ['aid','aname','akey','amodel','aurl'].forEach(function(x){"
@@ -2707,11 +2826,11 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
 }
 
 void BrowserWindow::ShowSettingsPage() {
-    NewTab("ferzan://ayarlar");
+    NewTab("ferman://ayarlar");
 }
 
 // ── Favori sağ-tık bağlam menüsü ─────────────────────────────────────────────
-namespace ferzan {
+namespace ferman {
 
 struct BmRenameCtx   { BrowserWindow* self; std::string url; std::string cur_title; };
 struct BmDelCtx      { BrowserWindow* self; std::string url; };
@@ -2912,6 +3031,8 @@ static void BmMoveClickCb(GtkButton* mb, gpointer ud) {
     gtk_popover_popup(GTK_POPOVER(fpop));
 }
 
+static void BmNewFolderClickCb(GtkButton*, gpointer);  // forward declaration
+
 // ── Ortak: bağlam menüsü popup oluştur (url + title + parent widget) ─────────
 static void BmShowContextMenu(BrowserWindow* self, GtkWidget* parent_w,
                                const std::string& url, const std::string& title) {
@@ -2924,7 +3045,7 @@ static void BmShowContextMenu(BrowserWindow* self, GtkWidget* parent_w,
     gtk_widget_set_margin_top(vbox, 6);   gtk_widget_set_margin_bottom(vbox, 6);
 
     std::string hdr = title.empty() ? url : title;
-    if (hdr.size() > 30) hdr = hdr.substr(0, 28) + "…";
+    if (hdr.size() > 30) hdr = hdr.substr(0, 28) + "\u2026";
     GtkWidget* hdr_lbl = gtk_label_new(hdr.c_str());
     gtk_widget_add_css_class(hdr_lbl, "dim-label");
     gtk_widget_set_halign(hdr_lbl, GTK_ALIGN_START);
@@ -2934,32 +3055,44 @@ static void BmShowContextMenu(BrowserWindow* self, GtkWidget* parent_w,
 
     // İsim değiştir
     auto* rctx = new BmRenameCtx{ self, url, title.empty() ? url : title };
-    GtkWidget* rename_btn = gtk_button_new_with_label("✏  İsim değiştir");
+    GtkWidget* rename_btn = gtk_button_new_with_label("İsim değiştir");
     gtk_widget_add_css_class(rename_btn, "flat");
-    gtk_widget_set_halign(rename_btn, GTK_ALIGN_FILL);
+    gtk_widget_set_halign(rename_btn, GTK_ALIGN_START);
     g_object_set_data_full(G_OBJECT(rename_btn), "rctx", rctx,
         [](gpointer p){ delete static_cast<BmRenameCtx*>(p); });
     g_object_set_data(G_OBJECT(rename_btn), "ctx_pop", pop);
     g_signal_connect(rename_btn, "clicked", G_CALLBACK(BmRenameClickCb), self);
     gtk_box_append(GTK_BOX(vbox), rename_btn);
 
-    // Klasöre taşı
+    // Klasöre taşı (mevcut klasörler listesi)
     auto* mc_url = new std::string(url);
-    GtkWidget* move_btn = gtk_button_new_with_label("📁  Klasöre taşı / yeni klasör");
+    GtkWidget* move_btn = gtk_button_new_with_label("Klasöre taşı");
     gtk_widget_add_css_class(move_btn, "flat");
-    gtk_widget_set_halign(move_btn, GTK_ALIGN_FILL);
+    gtk_widget_set_halign(move_btn, GTK_ALIGN_START);
     g_object_set_data_full(G_OBJECT(move_btn), "mc-url", mc_url,
         [](gpointer p){ delete static_cast<std::string*>(p); });
     g_object_set_data(G_OBJECT(move_btn), "ctx_pop", pop);
     g_signal_connect(move_btn, "clicked", G_CALLBACK(BmMoveClickCb), self);
     gtk_box_append(GTK_BOX(vbox), move_btn);
 
+    // Klasör oluştur (yeni klasör → url ile)
+    auto* mc_url2 = new std::string(url);
+    GtkWidget* newfolder_btn = gtk_button_new_with_label("Yeni klasör oluştur");
+    gtk_widget_add_css_class(newfolder_btn, "flat");
+    gtk_widget_set_halign(newfolder_btn, GTK_ALIGN_START);
+    g_object_set_data_full(G_OBJECT(newfolder_btn), "mc-url", mc_url2,
+        [](gpointer p){ delete static_cast<std::string*>(p); });
+    g_object_set_data(G_OBJECT(newfolder_btn), "ctx_pop", pop);
+    // Yeni klasör: BmMoveClickCb'yi kullan — folders boşsa direkt yeni klasör alanı gösterir
+    g_signal_connect(newfolder_btn, "clicked", G_CALLBACK(BmNewFolderClickCb), self);
+    gtk_box_append(GTK_BOX(vbox), newfolder_btn);
+
     // Sil
     auto* dctx = new BmDelCtx{ self, url };
-    GtkWidget* del_btn = gtk_button_new_with_label("🗑  Sil");
+    GtkWidget* del_btn = gtk_button_new_with_label("Sil");
     gtk_widget_add_css_class(del_btn, "flat");
     gtk_widget_add_css_class(del_btn, "destructive-action");
-    gtk_widget_set_halign(del_btn, GTK_ALIGN_FILL);
+    gtk_widget_set_halign(del_btn, GTK_ALIGN_START);
     g_object_set_data_full(G_OBJECT(del_btn), "dctx", dctx,
         [](gpointer p){ delete static_cast<BmDelCtx*>(p); });
     g_object_set_data(G_OBJECT(del_btn), "ctx_pop", pop);
@@ -2968,6 +3101,48 @@ static void BmShowContextMenu(BrowserWindow* self, GtkWidget* parent_w,
 
     gtk_popover_set_child(GTK_POPOVER(pop), vbox);
     gtk_popover_popup(GTK_POPOVER(pop));
+}
+
+// ── Yeni klasör oluştur butonu (BmShowContextMenu'den çağrılır) ───────────────
+static void BmNewFolderClickCb(GtkButton* b, gpointer ud2) {
+    auto* self2 = static_cast<BrowserWindow*>(ud2);
+    auto* url2  = static_cast<std::string*>(g_object_get_data(G_OBJECT(b), "mc-url"));
+    GtkWidget* cp = static_cast<GtkWidget*>(g_object_get_data(G_OBJECT(b), "ctx_pop"));
+    gtk_popover_popdown(GTK_POPOVER(cp));
+
+    GtkWidget* fpop = gtk_popover_new();
+    gtk_popover_set_has_arrow(GTK_POPOVER(fpop), FALSE);
+    gtk_widget_set_parent(fpop, gtk_widget_get_parent(cp));
+
+    GtkWidget* fbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_margin_start(fbox, 8); gtk_widget_set_margin_end(fbox, 8);
+    gtk_widget_set_margin_top(fbox, 8);   gtk_widget_set_margin_bottom(fbox, 8);
+
+    GtkWidget* flbl = gtk_label_new("Yeni klasör adı:");
+    gtk_widget_set_halign(flbl, GTK_ALIGN_START);
+    GtkWidget* fentry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(fentry), "Klasör adı…");
+    gtk_widget_set_size_request(fentry, 190, -1);
+
+    std::string bm_url2 = url2 ? *url2 : "";
+    auto* nfctx = new BmNewFolderCtx{ self2, bm_url2 };
+    g_object_set_data_full(G_OBJECT(fentry), "nfctx", nfctx,
+        [](gpointer p){ delete static_cast<BmNewFolderCtx*>(p); });
+    g_object_set_data(G_OBJECT(fentry), "fpop", fpop);
+    g_object_set_data(G_OBJECT(fpop), "entry_w", fentry);
+
+    GtkWidget* fsave = gtk_button_new_with_label("Oluştur ve Taşı");
+    gtk_widget_add_css_class(fsave, "suggested-action");
+    g_object_set_data(G_OBJECT(fsave), "nfctx", nfctx);
+    g_object_set_data(G_OBJECT(fsave), "fpop",  fpop);
+    g_signal_connect(fsave,  "clicked",  G_CALLBACK(BmNewFolderSaveCb),  nullptr);
+    g_signal_connect(fentry, "activate", G_CALLBACK(BmNewFolderEnterCb), nullptr);
+
+    gtk_box_append(GTK_BOX(fbox), flbl);
+    gtk_box_append(GTK_BOX(fbox), fentry);
+    gtk_box_append(GTK_BOX(fbox), fsave);
+    gtk_popover_set_child(GTK_POPOVER(fpop), fbox);
+    gtk_popover_popup(GTK_POPOVER(fpop));
 }
 
 // ── Kök favori sağ tık ───────────────────────────────────────────────────────
@@ -3036,7 +3211,7 @@ static void BmBarRightClickCb(GtkGestureClick* g, int, double, double, gpointer 
     gtk_popover_popup(GTK_POPOVER(pop));
 }
 
-} // namespace ferzan
+} // namespace ferman
 
 void BrowserWindow::RebuildBookmarksBar() {
     if (!bookmarks_box_) return;
@@ -3106,7 +3281,7 @@ void BrowserWindow::RebuildBookmarksBar() {
             GtkGesture* fi_rclick = gtk_gesture_click_new();
             gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(fi_rclick), GDK_BUTTON_SECONDARY);
             g_signal_connect(fi_rclick, "pressed",
-                G_CALLBACK(ferzan::BmFolderItemRightClickCb), this);
+                G_CALLBACK(ferman::BmFolderItemRightClickCb), this);
             gtk_widget_add_controller(item_btn, GTK_EVENT_CONTROLLER(fi_rclick));
             gtk_box_append(GTK_BOX(pop_box), item_btn);
         }
@@ -3121,7 +3296,7 @@ void BrowserWindow::RebuildBookmarksBar() {
         GtkGesture* bar_rclick = gtk_gesture_click_new();
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(bar_rclick), GDK_BUTTON_SECONDARY);
         g_signal_connect(bar_rclick, "pressed",
-            G_CALLBACK(ferzan::BmBarRightClickCb), this);
+            G_CALLBACK(ferman::BmBarRightClickCb), this);
         gtk_widget_add_controller(bookmarks_box_, GTK_EVENT_CONTROLLER(bar_rclick));
     }
 
@@ -3153,7 +3328,7 @@ void BrowserWindow::RebuildBookmarksBar() {
         // Sağ tık: bağlam menüsü (BmRightClickCb)
         GtkGesture* rclick = gtk_gesture_click_new();
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(rclick), GDK_BUTTON_SECONDARY);
-        g_signal_connect(rclick, "pressed", G_CALLBACK(ferzan::BmRightClickCb), this);
+        g_signal_connect(rclick, "pressed", G_CALLBACK(ferman::BmRightClickCb), this);
         gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(rclick));
         gtk_box_append(GTK_BOX(bookmarks_box_), btn);
 
@@ -3769,6 +3944,120 @@ void BrowserWindow::AppendAiBubble(const std::string& role, const std::string& t
 
 void BrowserWindow::ShowAiLoading(bool show) {
     if (ai_loading_label_) gtk_widget_set_visible(ai_loading_label_, show);
+}
+
+// ── Hızlı AI popup (Çeviri / Özet) ───────────────────────────────────────────
+void BrowserWindow::ShowAiQuickPopup(const std::string& title,
+                                      const std::string& prompt) {
+    // Aktif ajanı al
+    const auto& agents = AiAgentStore::Get().Agents();
+    std::string api_key, api_url, model, provider;
+    if (!agents.empty()) {
+        guint sel = ai_agent_combo_
+            ? gtk_drop_down_get_selected(GTK_DROP_DOWN(ai_agent_combo_)) : 0;
+        if (sel == GTK_INVALID_LIST_POSITION || sel >= agents.size()) sel = 0;
+        api_key  = agents[sel].api_key;
+        api_url  = agents[sel].api_url;
+        model    = agents[sel].model;
+    } else {
+        const auto& p = SettingsManager::Get().Prefs();
+        api_key = p.ai_api_key;
+        api_url = p.ai_base_url;
+        model   = p.ai_model;
+    }
+    provider = AiAgent::DetectProvider(api_key);
+
+    if (api_key.empty()) {
+        // Ajan yoksa popup ile uyar
+        GtkWidget* dlg = gtk_message_dialog_new(
+            GTK_WINDOW(window_), GTK_DIALOG_MODAL,
+            GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
+            "AI özelliği için önce Ayarlar > Yapay Zeka bölümünden bir ajan ekleyin.");
+        g_signal_connect(dlg, "response",
+            G_CALLBACK(+[](GtkDialog* d, int, gpointer){ gtk_window_destroy(GTK_WINDOW(d)); }),
+            nullptr);
+        gtk_window_present(GTK_WINDOW(dlg));
+        return;
+    }
+
+    // Popup pencere: başlık + yükleniyor label → cevap gelince güncellenir
+    GtkWidget* win = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(win), title.c_str());
+    gtk_window_set_default_size(GTK_WINDOW(win), 520, 400);
+    gtk_window_set_transient_for(GTK_WINDOW(win), GTK_WINDOW(window_));
+    gtk_window_set_modal(GTK_WINDOW(win), FALSE);
+
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_widget_set_margin_start(vbox, 16); gtk_widget_set_margin_end(vbox, 16);
+    gtk_widget_set_margin_top(vbox, 12);   gtk_widget_set_margin_bottom(vbox, 12);
+
+    // Başlık
+    GtkWidget* title_lbl = gtk_label_new(title.c_str());
+    gtk_widget_add_css_class(title_lbl, "title-4");
+    gtk_widget_set_halign(title_lbl, GTK_ALIGN_START);
+    gtk_box_append(GTK_BOX(vbox), title_lbl);
+    gtk_box_append(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
+
+    // Scroll + text view (cevap buraya yazılacak)
+    GtkWidget* scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+        GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scroll, TRUE);
+
+    GtkWidget* text_view = gtk_text_view_new();
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_view), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(text_view), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(text_view), FALSE);
+    gtk_widget_set_margin_start(text_view, 4); gtk_widget_set_margin_end(text_view, 4);
+    GtkTextBuffer* buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    gtk_text_buffer_set_text(buf, "Yapay zeka düşünüyor…", -1);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), text_view);
+    gtk_box_append(GTK_BOX(vbox), scroll);
+
+    // Kapat butonu
+    GtkWidget* close_btn = gtk_button_new_with_label("Kapat");
+    gtk_widget_set_halign(close_btn, GTK_ALIGN_END);
+    g_signal_connect(close_btn, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer ud){
+            gtk_window_destroy(GTK_WINDOW(ud));
+        }), win);
+    gtk_box_append(GTK_BOX(vbox), close_btn);
+
+    gtk_window_set_child(GTK_WINDOW(win), vbox);
+    gtk_window_present(GTK_WINDOW(win));
+
+    // AI isteği gönder — tmp_chat heap'te, callback bitince silinir
+    struct QuickCtx {
+        GtkTextBuffer* buf;
+        GtkWidget*     win;  // weak ref ile sıfırlanır
+        AiChat         chat; // referans kaybolmasın
+        std::string    result;
+    };
+    auto* ctx = new QuickCtx{};
+    ctx->buf  = buf;
+    ctx->win  = win;
+    ctx->chat.provider = provider;
+    ctx->chat.model    = model;
+    AiMessage qmsg;
+    qmsg.role    = "user";
+    qmsg.content = prompt;
+    ctx->chat.messages.push_back(qmsg);
+
+    g_object_add_weak_pointer(G_OBJECT(win), (gpointer*)&ctx->win);
+
+    AiManager::Get().SendMessage(
+        ctx->chat, provider, model, api_key, api_url,
+        [ctx](const std::string& content, bool /*done*/, const std::string& err) {
+            ctx->result = err.empty() ? content : ("⚠ Hata: " + err);
+            // GTK çağrıları main thread'de yap
+            g_idle_add([](gpointer ud) -> gboolean {
+                auto* c = static_cast<QuickCtx*>(ud);
+                if (c->win)
+                    gtk_text_buffer_set_text(c->buf, c->result.c_str(), -1);
+                delete c;
+                return G_SOURCE_REMOVE;
+            }, ctx);
+        });
 }
 
 std::string BrowserWindow::CollectAiInputText() {
@@ -4461,15 +4750,15 @@ void BrowserWindow::OnAiAttachCb(GtkButton*, gpointer ud) {
 
 void BrowserWindow::SaveTabSession() {
     const char* home = g_get_home_dir();
-    std::string path = std::string(home) + "/.local/share/ferzan-browser/last_session.txt";
+    std::string path = std::string(home) + "/.local/share/ferman-browser/last_session.txt";
     std::ofstream f(path, std::ios::trunc);
     if (!f) return;
     for (auto* t : tabs_) {
         if (!t->webview) continue;
         const char* uri = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(t->webview));
         std::string url = uri ? uri : t->url;
-        // ferzan:// iç sayfaları kaydetme — sadece gerçek URL'ler
-        if (url.empty() || url.rfind("ferzan://", 0) == 0 ||
+        // ferman:// iç sayfaları kaydetme — sadece gerçek URL'ler
+        if (url.empty() || url.rfind("ferman://", 0) == 0 ||
             url.rfind("about:", 0) == 0) continue;
         f << url << "\n";
     }
@@ -4477,7 +4766,7 @@ void BrowserWindow::SaveTabSession() {
 
 void BrowserWindow::RestoreTabSession() {
     const char* home = g_get_home_dir();
-    std::string path = std::string(home) + "/.local/share/ferzan-browser/last_session.txt";
+    std::string path = std::string(home) + "/.local/share/ferman-browser/last_session.txt";
     std::ifstream f(path);
     if (!f) return;
     std::string line;
@@ -4490,35 +4779,35 @@ void BrowserWindow::RestoreTabSession() {
     (void)opened_any;
 }
 
-void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
+void BrowserWindow::HandlefermanScheme(const std::string& uri) {
     if (!active_tab_) return;
     auto* wv = WEBKIT_WEB_VIEW(active_tab_->webview);
     std::string html;
     std::string title;
 
-    if (uri == "ferzan://ayarlar" || uri == "ferzan://ayarlar/genel" ||
-        uri.rfind("ferzan://ayarlar?", 0) == 0) {
+    if (uri == "ferman://ayarlar" || uri == "ferman://ayarlar/genel" ||
+        uri.rfind("ferman://ayarlar?", 0) == 0) {
         html  = BuildSettingsHTML("genel");
-        title = "Genel Ayarlar — Ferzan";
-    } else if (uri == "ferzan://ayarlar/gorunum") {
+        title = "Genel Ayarlar — ferman";
+    } else if (uri == "ferman://ayarlar/gorunum") {
         html  = BuildAppearanceSettingsHTML();
-        title = "Görünüm — Ferzan";
-    } else if (uri == "ferzan://ayarlar/sekmeler") {
+        title = "Görünüm — ferman";
+    } else if (uri == "ferman://ayarlar/sekmeler") {
         html  = BuildTabsSettingsHTML();
-        title = "Sekmeler — Ferzan";
-    } else if (uri == "ferzan://ayarlar/gelismis") {
+        title = "Sekmeler — ferman";
+    } else if (uri == "ferman://ayarlar/gelismis") {
         html  = BuildAdvancedSettingsHTML();
-        title = "Gelişmiş — Ferzan";
-    } else if (uri == "ferzan://ayarlar/hakkimizda") {
+        title = "Gelişmiş — ferman";
+    } else if (uri == "ferman://ayarlar/hakkimizda") {
         html  = BuildAboutHTML();
-        title = "Hakkımızda — Ferzan";
-    } else if (uri == "ferzan://ayarlar/gizlilik") {
+        title = "Hakkımızda — ferman";
+    } else if (uri == "ferman://ayarlar/gizlilik") {
         html  = BuildPrivacyHTML();
-        title = "Gizlilik — Ferzan";
-    } else if (uri == "ferzan://ayarlar/yapay-zeka") {
+        title = "Gizlilik — ferman";
+    } else if (uri == "ferman://ayarlar/yapay-zeka") {
         html  = BuildSettingsAiHTML();
-        title = "Yapay Zeka — Ferzan";
-    } else if (uri.rfind("ferzan://ai-ajan-kaydet", 0) == 0) {
+        title = "Yapay Zeka — ferman";
+    } else if (uri.rfind("ferman://ai-ajan-kaydet", 0) == 0) {
         auto decode = [&](const std::string& key) -> std::string {
             std::string search = key + "=";
             auto pos = uri.find(search);
@@ -4548,9 +4837,9 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
             if (existing) ag.api_key = existing->api_key;
         }
         AiAgentStore::Get().AddAgent(ag);
-        webkit_web_view_load_uri(wv, "ferzan://ayarlar/yapay-zeka");
+        webkit_web_view_load_uri(wv, "ferman://ayarlar/yapay-zeka");
         return;
-    } else if (uri.rfind("ferzan://ai-ajan-sil", 0) == 0) {
+    } else if (uri.rfind("ferman://ai-ajan-sil", 0) == 0) {
         auto pos = uri.find("id=");
         if (pos != std::string::npos) {
             std::string enc_id = uri.substr(pos + 3);
@@ -4563,12 +4852,12 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
             }
             AiAgentStore::Get().RemoveAgent(id);
         }
-        webkit_web_view_load_uri(wv, "ferzan://ayarlar/yapay-zeka");
+        webkit_web_view_load_uri(wv, "ferman://ayarlar/yapay-zeka");
         return;
-    } else if (uri == "ferzan://indirmeler") {
+    } else if (uri == "ferman://indirmeler") {
         DownloadManager::Get().ShowPanel();
         return;
-    } else if (uri.rfind("ferzan://pick-download-dir", 0) == 0) {
+    } else if (uri.rfind("ferman://pick-download-dir", 0) == 0) {
         // İndirme klasörü seçici — GtkFileDialog ile native klasör seçici aç
         GtkFileDialog* fd = gtk_file_dialog_new();
         gtk_file_dialog_set_title(fd, "İndirme Klasörünü Seç");
@@ -4606,7 +4895,7 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
                         SettingsManager::Get().Prefs().download_dir = path;
                         SettingsManager::Get().Save();
                         // Ayarlar sayfasını yenile
-                        ctx->self->HandleFerzanScheme("ferzan://ayarlar");
+                        ctx->self->HandlefermanScheme("ferman://ayarlar");
                         g_free(path);
                     }
                     g_object_unref(f);
@@ -4615,10 +4904,10 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
             }, ctx);
         g_object_unref(fd);
         return;
-    } else if (uri == "ferzan://gecmis") {
+    } else if (uri == "ferman://gecmis") {
         html  = BuildHistoryHTML();
-        title = "Geçmiş — Ferzan";
-    } else if (uri.rfind("ferzan://gecmis-temizle", 0) == 0) {
+        title = "Geçmiş — ferman";
+    } else if (uri.rfind("ferman://gecmis-temizle", 0) == 0) {
         // Geçmişi temizle — sayfa içinden onay alındıktan sonra
         HistoryManager::Get().Clear();
         WebKitNetworkSession* ns = SessionManager::Get().GetSession();
@@ -4628,10 +4917,10 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
                 WEBKIT_WEBSITE_DATA_MEMORY_CACHE |
                 WEBKIT_WEBSITE_DATA_DISK_CACHE),
             0, nullptr, nullptr, nullptr);
-        webkit_web_view_load_uri(wv, "ferzan://gecmis");
+        webkit_web_view_load_uri(wv, "ferman://gecmis");
         return;
-    } else if (uri.rfind("ferzan://favori-yeniden-adlandir", 0) == 0) {
-        // ferzan://favori-yeniden-adlandir?url=...&title=...
+    } else if (uri.rfind("ferman://favori-yeniden-adlandir", 0) == 0) {
+        // ferman://favori-yeniden-adlandir?url=...&title=...
         auto parse_param = [&](const std::string& key) -> std::string {
             std::string search = key + "=";
             auto pos = uri.find(search);
@@ -4654,7 +4943,7 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
         if (!burl.empty()) BookmarkManager::Get().Rename(burl, btitle);
         RebuildBookmarksBar();
         return;
-    } else if (uri.rfind("ferzan://favori-klasor", 0) == 0) {
+    } else if (uri.rfind("ferman://favori-klasor", 0) == 0) {
         auto parse_param = [&](const std::string& key) -> std::string {
             std::string search = key + "=";
             auto pos = uri.find(search);
@@ -4677,7 +4966,7 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
         if (!burl.empty()) BookmarkManager::Get().MoveToFolder(burl, bfolder);
         RebuildBookmarksBar();
         return;
-    } else if (uri.rfind("ferzan://ayarlar-kaydet", 0) == 0) {
+    } else if (uri.rfind("ferman://ayarlar-kaydet", 0) == 0) {
         // Ayarları URL parametrelerinden oku ve kaydet
         auto& prefs = SettingsManager::Get().Prefs();
         auto parse_param = [&](const std::string& key) -> std::string {
@@ -4756,15 +5045,15 @@ void BrowserWindow::HandleFerzanScheme(const std::string& uri) {
             }
         }
         // Kayıt sonrası ayarlar sayfasına dön
-        webkit_web_view_load_uri(wv, "ferzan://ayarlar");
+        webkit_web_view_load_uri(wv, "ferman://ayarlar");
         return;
     } else {
-        return;  // bilinmeyen ferzan:// — zaten home tarafından handle ediliyor
+        return;  // bilinmeyen ferman:// — zaten home tarafından handle ediliyor
     }
 
     webkit_web_view_load_html(wv, html.c_str(), nullptr);
     active_tab_->title = title;
-    active_tab_->url   = uri;  // URL bar'da ferzan:// görünsün
+    active_tab_->url   = uri;  // URL bar'da ferman:// görünsün
     UpdateTabLabel(active_tab_);
     // URL barını güncelle (programatik — focus yoksa changed sinyali popup açmaz)
     gtk_editable_set_text(GTK_EDITABLE(url_entry_), uri.c_str());
@@ -4802,4 +5091,4 @@ void BrowserWindow::OnMouseTargetChangedCb(WebKitWebView* wv,
     static_cast<BrowserWindow*>(ud)->OnMouseTargetChanged(wv, hit);
 }
 
-} // namespace ferzan
+} // namespace ferman

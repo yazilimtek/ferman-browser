@@ -1,7 +1,7 @@
 #pragma once
 #include <string>
 
-namespace ferzan {
+namespace ferman {
 
 struct ExtractResult {
     std::string text;       // çıkarılan metin (boşsa hata var)
@@ -31,4 +31,4 @@ private:
                                    const std::string& xml_entry);
 };
 
-} // namespace ferzan
+} // namespace ferman

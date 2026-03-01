@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace ferzan {
+namespace ferman {
 
 struct DownloadItem {
     WebKitDownload* download  = nullptr;
@@ -50,4 +50,4 @@ private:
     std::vector<DownloadItem*> items_;
 };
 
-} // namespace ferzan
+} // namespace ferman

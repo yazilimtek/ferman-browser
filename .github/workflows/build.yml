@@ -33,5 +33,5 @@ jobs:
 
       - name: Check binary
         run: |
-          ls -lh build/ferzan-browser
-          file build/ferzan-browser
+          ls -lh build/ferman-browser
+          file build/ferman-browser

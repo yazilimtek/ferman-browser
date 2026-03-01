@@ -5,7 +5,7 @@
 #include <string>
 #include <cstdio>
 
-namespace ferzan {
+namespace ferman {
 
 // ── Yardımcı: bayt → okunabilir boyut ────────────────────────────────────────
 static std::string fmt_size(gint64 bytes) {
@@ -360,4 +360,4 @@ void DownloadManager::ShowPanel() {
     gtk_menu_button_popup(GTK_MENU_BUTTON(panel_btn_));
 }
 
-} // namespace ferzan
+} // namespace ferman
