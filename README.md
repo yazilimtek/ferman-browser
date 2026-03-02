@@ -9,13 +9,16 @@ Ferman Browser, GTK4 ve WebKitGTK kullanılarak C++20 ile yazılmış hafif, hı
 
 ## Özellikler
 
+- **Kurulum Karşılama Ekranı** — İlk açılışta ferman.net.tr ile entegrasyon
 - **Sekme sistemi** — Çoklu sekme, header bar'da gösterim
 - **Ana sayfa** — Gömülü başlangıç sayfası ve Google arama
 - **Akıllı adres çubuğu** — URL veya arama sorgusu olarak algılar
+- **Yapay Zeka Entegrasyonu** — Çoklu AI provider desteği (OpenAI, Anthropic, DeepSeek, Groq)
 - **Favicon desteği** — Her sekme için site simgesi
 - **Sekme bilgileri** — `#id`, favicon ve site adı her sekmede görünür
 - **Sekme davranışı** — Son sekme kapanınca uygulama kapanmaz, ana sayfa açılır
 - **Adres çubuğu araçları** — Temizle, kopyala ve favori butonları
+- **Güvenli Ayarlar** — API key şifreli saklama
 - **GTK4 native UI** — Modern, sistem temasıyla uyumlu arayüz
 
 ## Gereksinimler
@@ -115,13 +118,37 @@ ferman-browser/
 │   ├── main.cpp            # Giriş noktası — GtkApplication
 │   ├── tab.h               # Tab veri yapısı
 │   ├── browser_window.h    # BrowserWindow sınıf tanımı
-│   └── browser_window.cpp  # UI, tab yönetimi, sinyal callback'leri
+│   ├── browser_window.cpp  # UI, tab yönetimi, sinyal callback'leri
+│   ├── settings_manager.h  # Ayarlar yönetimi
+│   ├── settings_manager.cpp
+│   ├── setup_manager.h     # Kurulum API entegrasyonu
+│   ├── setup_manager.cpp
+│   ├── crypto_utils.h      # API key şifreleme
+│   ├── crypto_utils.cpp
+│   ├── ai_manager.h        # Yapay zeka yönetimi
+│   ├── ai_manager.cpp
+│   ├── session_manager.h   # Oturum yönetimi
+│   ├── history_manager.h   # Geçmiş yönetimi
+│   ├── bookmark_manager.h  # Yer imi yönetimi
+│   └── download_manager.h  # İndirme yönetimi
 └── .github/
     └── workflows/
         └── build.yml       # GitHub Actions CI
 ```
 
 ## Kullanım
+
+### İlk Çalıştırma
+
+Tarayıcıyı ilk kez açtığınızda kurulum karşılama ekranı görünür:
+1. Email, şifre ve isim bilgilerinizi girin
+2. "Kurulumu Başlat" butonuna tıklayın
+3. ferman.net.tr ile otomatik entegrasyon sağlanır
+4. API key şifreli olarak kaydedilir
+
+**Alternatif**: "Kurulumu Atla" seçeneği ile daha sonra manuel yapılandırabilirsiniz.
+
+### Temel Kullanım
 
 | Eylem | Yöntem |
 |---|---|
@@ -133,6 +160,8 @@ ferman-browser/
 | Yenile / Durdur | ↻ butonu |
 | URL temizle | Adres çubuğu yanı `✕` |
 | URL kopyala | Adres çubuğu yanı kopyala ikonu |
+| Ayarlar | Menü → Ayarlar veya `ferman://ayarlar` |
+| Yapay Zeka | Sağ panel butonu |
 
 ## Katkı
 

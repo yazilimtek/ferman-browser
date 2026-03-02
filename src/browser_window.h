@@ -56,7 +56,9 @@ private:
     std::string BuildAdvancedSettingsHTML();
     std::string BuildHistoryHTML();
     std::string BuildAboutHTML();
+    std::string BuildSetupHTML(const std::string& error = "");
     void  HandlefermanScheme(const std::string& uri);
+    void  ShowAiSetupWarning();
     void  SaveTabSession();
     void  RestoreTabSession();
     void  ShowFindBar();

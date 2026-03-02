@@ -31,6 +31,10 @@ compile_commands.json
 third_party/
 LCache/
 site/
+huaweiApp/
+iOSApp/
+androidApp/
+
 
 # Geçici dosyalar
 *.tmp

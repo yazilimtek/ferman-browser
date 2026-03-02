@@ -22,6 +22,11 @@ struct Settings {
     std::string ai_api_key        = "";
     std::string ai_model          = "deepseek-chat";
     std::string ai_base_url       = "";
+    // Kurulum durumu
+    bool        setup_completed   = false;     // kurulum tamamlandı mı
+    bool        setup_skipped     = false;     // kurulum atlandı mı
+    std::string user_email        = "";        // kullanıcı email
+    std::string encrypted_api_key = "";        // şifreli API key (ferman.net.tr)
 };
 
 // Yapay zeka ajanı
@@ -77,6 +82,14 @@ public:
 
     Settings& Prefs() { return settings_; }
     const Settings& Prefs() const { return settings_; }
+    
+    // Kurulum durumu kontrolleri
+    bool IsFirstRun() const { return !settings_.setup_completed; }
+    bool IsSetupSkipped() const { return settings_.setup_skipped; }
+    
+    // Şifreli API key yönetimi
+    std::string GetDecryptedApiKey() const;
+    void SetEncryptedApiKey(const std::string& plain_key);
 
 private:
     SettingsManager() = default;

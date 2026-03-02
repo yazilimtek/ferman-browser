@@ -27,6 +27,8 @@ set(SOURCES
     src/settings_manager.cpp
     src/ai_manager.cpp
     src/file_extractor.cpp
+    src/crypto_utils.cpp
+    src/setup_manager.cpp
 )
 
 add_executable(ferman-browser ${SOURCES})

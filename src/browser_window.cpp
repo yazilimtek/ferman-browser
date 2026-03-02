@@ -4,6 +4,7 @@
 #include "bookmark_manager.h"
 #include "download_manager.h"
 #include "settings_manager.h"
+#include "setup_manager.h"
 #include <algorithm>
 #include <string>
 #include <sstream>
@@ -682,8 +683,11 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
             return FALSE; // pencereyi kapat
         }), this);
 
-    // İlk tab: restore_tabs açıksa önceki sekmeleri yükle, yoksa ana sayfa
-    if (SettingsManager::Get().Prefs().restore_tabs) {
+    // İlk tab: kurulum kontrolü → restore_tabs → ana sayfa
+    if (SettingsManager::Get().IsFirstRun()) {
+        // İLK ÇALIŞTIRMA - Kurulum ekranı göster
+        NewTab("ferman://setup");
+    } else if (SettingsManager::Get().Prefs().restore_tabs) {
         RestoreTabSession();
         // Hiç sekme açılmadıysa (ilk çalıştırma veya boş session) ana sayfa aç
         if (tabs_.empty())
@@ -2418,6 +2422,104 @@ border-radius:8px;padding:8px 18px;font-size:.82rem;color:rgba(255,255,255,.75)}
   </div>
   <div class="copy">&copy; 2026 ferman Project — MIT Lisansı</div>
 </div>
+</body></html>)html";
+}
+
+// ── Kurulum Ekranı ───────────────────────────────────────────────────────────
+std::string BrowserWindow::BuildSetupHTML(const std::string& error) {
+    std::string error_html;
+    if (!error.empty()) {
+        error_html = "<div id=\"error-msg\" style=\"background:#fee;border:1px solid #fcc;"
+            "border-radius:8px;padding:12px 16px;margin-bottom:20px;color:#c00;"
+            "font-size:.88rem;display:flex;align-items:center;gap:8px\">"
+            "<span style=\"font-size:1.2rem\">⚠</span><span>" + error + "</span></div>";
+    }
+    
+    return R"html(<!DOCTYPE html><html lang="tr"><head><meta charset="UTF-8">
+<title>Kurulum — Ferman Browser</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);
+min-height:100vh;display:flex;flex-direction:column;align-items:center;
+justify-content:center;color:#e0e0e0;padding:20px}
+.setup-card{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);
+border-radius:20px;padding:48px 56px;text-align:center;max-width:480px;width:100%;
+backdrop-filter:blur(10px);box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.logo{font-size:2.8rem;font-weight:800;margin-bottom:8px;
+background:linear-gradient(90deg,#e94560,#4dabf7);
+-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{font-size:.95rem;color:rgba(255,255,255,.55);margin-bottom:32px;line-height:1.6}
+.form-group{margin-bottom:18px;text-align:left}
+.form-group label{display:block;font-size:.85rem;color:rgba(255,255,255,.7);
+margin-bottom:6px;font-weight:500}
+.form-group input{width:100%;padding:12px 16px;border:1.5px solid rgba(255,255,255,.15);
+border-radius:10px;font-size:.92rem;background:rgba(255,255,255,.08);
+color:#fff;outline:none;transition:all .2s}
+.form-group input:focus{border-color:#4dabf7;background:rgba(255,255,255,.12);
+box-shadow:0 0 0 3px rgba(77,171,247,.15)}
+.form-group input::placeholder{color:rgba(255,255,255,.35)}
+.btn-primary{width:100%;background:#4dabf7;border:none;border-radius:10px;
+color:#fff;font-size:.95rem;font-weight:600;padding:14px;cursor:pointer;
+transition:background .15s;margin-top:8px}
+.btn-primary:hover{background:#3a9ae0}
+.btn-primary:disabled{background:#555;cursor:not-allowed;opacity:.6}
+.btn-secondary{background:transparent;border:1.5px solid rgba(255,255,255,.2);
+color:rgba(255,255,255,.7);margin-top:12px}
+.btn-secondary:hover{background:rgba(255,255,255,.05);border-color:rgba(255,255,255,.3)}
+.spinner{display:none;width:20px;height:20px;border:3px solid rgba(255,255,255,.3);
+border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;
+margin:0 auto 12px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading .spinner{display:block}
+.loading .btn-primary{opacity:.6;pointer-events:none}
+</style></head><body>
+<div class="setup-card">
+  <div class="logo">Ferman Browser</div>
+  <p class="subtitle">Hoş geldiniz! Başlamak için lütfen bilgilerinizi girin.</p>
+  )html" + error_html + R"html(
+  <div class="spinner"></div>
+  <form id="setup-form" onsubmit="return submitSetup(event)">
+    <div class="form-group">
+      <label>Email Adresi</label>
+      <input type="email" id="email" placeholder="ornek@email.com" required autocomplete="email">
+    </div>
+    <div class="form-group">
+      <label>Şifre</label>
+      <input type="password" id="password" placeholder="En az 6 karakter" required 
+        autocomplete="new-password" minlength="6">
+    </div>
+    <div class="form-group">
+      <label>İsim</label>
+      <input type="text" id="name" placeholder="Adınız Soyadınız" required autocomplete="name">
+    </div>
+    <button type="submit" class="btn-primary">Kurulumu Başlat</button>
+    <button type="button" class="btn-primary btn-secondary" onclick="skipSetup()">
+      Kurulumu Atla
+    </button>
+  </form>
+</div>
+<script>
+function submitSetup(e){
+  e.preventDefault();
+  var email=document.getElementById('email').value.trim();
+  var password=document.getElementById('password').value;
+  var name=document.getElementById('name').value.trim();
+  if(!email||!password||!name){alert('Tüm alanları doldurun');return false;}
+  document.querySelector('.setup-card').classList.add('loading');
+  var url='ferman://setup-submit?email='+encodeURIComponent(email)
+    +'&password='+encodeURIComponent(password)
+    +'&name='+encodeURIComponent(name);
+  window.location.href=url;
+  return false;
+}
+function skipSetup(){
+  if(confirm('Kurulumu atlamak istediğinizden emin misiniz?\n\n'+
+    'Yapay zeka özelliklerini kullanmak için daha sonra ferman.net.tr, '+
+    'openai.com, claude.com veya deepseek.com adreslerinden API anahtarı almanız gerekecek.')){
+    window.location.href='ferman://setup-skip';
+  }
+}
+</script>
 </body></html>)html";
 }
 
@@ -4507,11 +4609,19 @@ void BrowserWindow::SendAiMessage() {
     DoSendAiMessage(input, provider, model, active_api_key, active_api_url);
 }
 
-void BrowserWindow::DoSendAiMessage(const std::string& input,
                                     const std::string& provider,
                                     const std::string& model,
                                     const std::string& api_key,
                                     const std::string& api_url) {
+    if (input.empty()) return;
+    
+    // Kurulum atlandıysa ve API key yoksa uyarı göster
+    if (SettingsManager::Get().IsSetupSkipped() && 
+        SettingsManager::Get().GetDecryptedApiKey().empty() &&
+        api_key.empty()) {
+        ShowAiSetupWarning();
+        return;
+    }
     // *id → geçmiş sohbet
     for (size_t p = 0; p < input.size(); ++p) {
         if (input[p] == '*' && p + 1 < input.size() && std::isdigit((unsigned char)input[p+1])) {
@@ -4795,7 +4905,115 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
     std::string html;
     std::string title;
 
-    if (uri == "ferman://ayarlar" || uri == "ferman://ayarlar/genel" ||
+    // ── Kurulum Ekranı ──────────────────────────────────────────────────────
+    if (uri == "ferman://setup" || uri.rfind("ferman://setup?", 0) == 0) {
+        // Hata parametresi varsa parse et
+        std::string error;
+        auto err_pos = uri.find("error=");
+        if (err_pos != std::string::npos) {
+            err_pos += 6;
+            auto end_pos = uri.find('&', err_pos);
+            std::string enc_error = (end_pos == std::string::npos) 
+                ? uri.substr(err_pos) : uri.substr(err_pos, end_pos - err_pos);
+            // URL decode
+            for (size_t i = 0; i < enc_error.size(); ++i) {
+                if (enc_error[i] == '%' && i + 2 < enc_error.size()) {
+                    int val; sscanf(enc_error.substr(i+1,2).c_str(), "%x", &val);
+                    error += (char)val; i += 2;
+                } else if (enc_error[i] == '+') {
+                    error += ' ';
+                } else {
+                    error += enc_error[i];
+                }
+            }
+        }
+        html  = BuildSetupHTML(error);
+        title = "Kurulum — Ferman Browser";
+    }
+    // ── Kurulum Gönder ──────────────────────────────────────────────────────
+    else if (uri.rfind("ferman://setup-submit", 0) == 0) {
+        auto parse_param = [&](const std::string& key) -> std::string {
+            std::string search = key + "=";
+            auto pos = uri.find(search);
+            if (pos == std::string::npos) return "";
+            pos += search.size();
+            auto end = uri.find('&', pos);
+            std::string encoded = (end == std::string::npos) ? uri.substr(pos) : uri.substr(pos, end - pos);
+            std::string decoded;
+            for (size_t i = 0; i < encoded.size(); ++i) {
+                if (encoded[i] == '%' && i+2 < encoded.size()) {
+                    int val; sscanf(encoded.substr(i+1,2).c_str(), "%x", &val);
+                    decoded += (char)val; i += 2;
+                } else if (encoded[i] == '+') decoded += ' ';
+                else decoded += encoded[i];
+            }
+            return decoded;
+        };
+        
+        std::string email = parse_param("email");
+        std::string password = parse_param("password");
+        std::string name = parse_param("name");
+        
+        // HTTP isteği gönder (async)
+        SetupManager::Get().SendSetupRequest(email, password, name,
+            [this](bool success, const SetupData& data, const std::string& error) {
+                if (success) {
+                    // Ayarları kaydet
+                    auto& prefs = SettingsManager::Get().Prefs();
+                    prefs.setup_completed = true;
+                    prefs.setup_skipped = false;
+                    prefs.user_email = data.email;
+                    SettingsManager::Get().SetEncryptedApiKey(data.api_key);
+                    
+                    if (!data.homepage.empty()) prefs.homepage = data.homepage;
+                    if (!data.search_engine.empty()) prefs.search_engine = data.search_engine;
+                    if (!data.ai_provider.empty()) prefs.ai_provider = data.ai_provider;
+                    if (!data.ai_model.empty()) prefs.ai_model = data.ai_model;
+                    if (!data.ai_base_url.empty()) prefs.ai_base_url = data.ai_base_url;
+                    
+                    SettingsManager::Get().Save();
+                    
+                    // Ana sayfaya yönlendir
+                    g_idle_add([](gpointer ud) -> gboolean {
+                        auto* self = static_cast<BrowserWindow*>(ud);
+                        if (self->active_tab_) {
+                            const std::string& hp = SettingsManager::Get().Prefs().homepage;
+                            std::string url = hp.empty() ? self->kHomePage : hp;
+                            webkit_web_view_load_uri(
+                                WEBKIT_WEB_VIEW(self->active_tab_->webview), url.c_str());
+                        }
+                        return G_SOURCE_REMOVE;
+                    }, this);
+                } else {
+                    // Hata ile kurulum sayfasına geri dön
+                    std::string error_url = "ferman://setup?error=" + error;
+                    g_idle_add([](gpointer ud) -> gboolean {
+                        auto* pair = static_cast<std::pair<BrowserWindow*, std::string>*>(ud);
+                        if (pair->first->active_tab_) {
+                            webkit_web_view_load_uri(
+                                WEBKIT_WEB_VIEW(pair->first->active_tab_->webview),
+                                pair->second.c_str());
+                        }
+                        delete pair;
+                        return G_SOURCE_REMOVE;
+                    }, new std::pair<BrowserWindow*, std::string>(this, error_url));
+                }
+            });
+        return; // Async işlem, HTML yükleme yok
+    }
+    // ── Kurulum Atla ────────────────────────────────────────────────────────
+    else if (uri == "ferman://setup-skip") {
+        SettingsManager::Get().Prefs().setup_completed = true;
+        SettingsManager::Get().Prefs().setup_skipped = true;
+        SettingsManager::Get().Save();
+        
+        const std::string& hp = SettingsManager::Get().Prefs().homepage;
+        std::string url = hp.empty() ? kHomePage : hp;
+        webkit_web_view_load_uri(wv, url.c_str());
+        return;
+    }
+    // ── Ayarlar Sayfaları ───────────────────────────────────────────────────
+    else if (uri == "ferman://ayarlar" || uri == "ferman://ayarlar/genel" ||
         uri.rfind("ferman://ayarlar?", 0) == 0) {
         html  = BuildSettingsHTML("genel");
         title = "Genel Ayarlar — ferman";
@@ -5100,6 +5318,34 @@ void BrowserWindow::OnMouseTargetChangedCb(WebKitWebView* wv,
                                             WebKitHitTestResult* hit,
                                             guint, gpointer ud) {
     static_cast<BrowserWindow*>(ud)->OnMouseTargetChanged(wv, hit);
+}
+
+void BrowserWindow::ShowAiSetupWarning() {
+    GtkAlertDialog* dlg = gtk_alert_dialog_new("Yapay Zeka Kurulumu Gerekli");
+    gtk_alert_dialog_set_detail(dlg,
+        "Yapay zeka özelliklerini kullanmak için aşağıdaki adreslerden "
+        "API anahtarı almanız gerekir:\n\n"
+        "• ferman.net.tr\n"
+        "• openai.com\n"
+        "• claude.com (anthropic.com)\n"
+        "• deepseek.com\n\n"
+        "API anahtarınızı Ayarlar > Yapay Zeka bölümünden ekleyebilirsiniz.");
+    
+    const char* btns[] = { "Tamam", "Ayarlara Git", nullptr };
+    gtk_alert_dialog_set_buttons(dlg, btns);
+    gtk_alert_dialog_set_cancel_button(dlg, 0);
+    gtk_alert_dialog_set_default_button(dlg, 1);
+    
+    gtk_alert_dialog_choose(dlg, GTK_WINDOW(window_), nullptr,
+        [](GObject* src, GAsyncResult* res, gpointer ud) {
+            int btn = gtk_alert_dialog_choose_finish(
+                GTK_ALERT_DIALOG(src), res, nullptr);
+            if (btn == 1) {
+                auto* self = static_cast<BrowserWindow*>(ud);
+                self->NewTab("ferman://ayarlar/yapay-zeka");
+            }
+            g_object_unref(src);
+        }, this);
 }
 
 } // namespace ferman

@@ -1,4 +1,5 @@
 #include "settings_manager.h"
+#include "crypto_utils.h"
 #include <glib.h>
 #include <string>
 #include <algorithm>
@@ -61,6 +62,10 @@ void SettingsManager::Load() {
     settings_.ai_api_key          = get_str ("AI", "api_key",   settings_.ai_api_key);
     settings_.ai_model            = get_str ("AI", "model",     settings_.ai_model);
     settings_.ai_base_url         = get_str ("AI", "base_url",  settings_.ai_base_url);
+    settings_.setup_completed     = get_bool("Setup", "completed",      settings_.setup_completed);
+    settings_.setup_skipped       = get_bool("Setup", "skipped",        settings_.setup_skipped);
+    settings_.user_email          = get_str ("Setup", "user_email",     settings_.user_email);
+    settings_.encrypted_api_key   = get_str ("Setup", "encrypted_api_key", settings_.encrypted_api_key);
 
     g_key_file_free(kf);
 }
@@ -83,12 +88,29 @@ void SettingsManager::Save() {
     g_key_file_set_string (kf, "AI",      "api_key",             settings_.ai_api_key.c_str());
     g_key_file_set_string (kf, "AI",      "model",               settings_.ai_model.c_str());
     g_key_file_set_string (kf, "AI",      "base_url",            settings_.ai_base_url.c_str());
+    g_key_file_set_boolean(kf, "Setup",   "completed",           settings_.setup_completed);
+    g_key_file_set_boolean(kf, "Setup",   "skipped",             settings_.setup_skipped);
+    g_key_file_set_string (kf, "Setup",   "user_email",          settings_.user_email.c_str());
+    g_key_file_set_string (kf, "Setup",   "encrypted_api_key",   settings_.encrypted_api_key.c_str());
 
     GError* err = nullptr;
     if (!g_key_file_save_to_file(kf, filepath_.c_str(), &err)) {
         if (err) g_error_free(err);
     }
     g_key_file_free(kf);
+}
+
+std::string SettingsManager::GetDecryptedApiKey() const {
+    if (settings_.encrypted_api_key.empty()) return "";
+    return CryptoUtils::DecryptApiKey(settings_.encrypted_api_key);
+}
+
+void SettingsManager::SetEncryptedApiKey(const std::string& plain_key) {
+    if (plain_key.empty()) {
+        settings_.encrypted_api_key = "";
+    } else {
+        settings_.encrypted_api_key = CryptoUtils::EncryptApiKey(plain_key);
+    }
 }
 
 // ── AiAgentStore ─────────────────────────────────────────────────────────────
