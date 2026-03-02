@@ -59,7 +59,7 @@ sudo pacman -S cmake gcc gtk4 webkitgtk-6.0 pkgconf
 ## Kurulum (Önerilen)
 
 ```bash
-git clone https://github.com/pardusus/ferman-browser.git
+git clone https://github.com/yazilimtek/ferman-browser.git
 cd ferman-browser
 sudo ./install.sh
 ```
@@ -79,7 +79,7 @@ sudo ./install.sh --prefix /usr/local
 ## Manuel Derleme & Kurulum
 
 ```bash
-git clone https://github.com/pardusus/ferman-browser.git
+git clone https://github.com/yazilimtek/ferman-browser.git
 cd ferman-browser
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
