@@ -42,10 +42,12 @@ static const char* kTabCSS = R"(
 }
 .status-bar {
     font-size: 0.75rem;
-    padding: 1px 8px;
-    color: alpha(@window_fg_color, 0.6);
-    background-color: alpha(@window_bg_color, 0.95);
-    border-top: 1px solid alpha(@window_fg_color, 0.08);
+    padding: 2px 10px;
+    color: alpha(@window_fg_color, 0.85);
+    background-color: alpha(@window_bg_color, 0.92);
+    border: 1px solid alpha(@window_fg_color, 0.10);
+    border-radius: 0 4px 0 0;
+    max-width: 480px;
 }
 .bookmarked {
     color: #e6a817;
@@ -333,6 +335,7 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     WebKitNetworkSession* net_sess = SessionManager::Get().GetSession();
     g_signal_connect(net_sess, "download-started",
         G_CALLBACK(+[](WebKitNetworkSession*, WebKitDownload* dl, gpointer) {
+            g_object_set_data(G_OBJECT(dl), "dm-ptr", &DownloadManager::Get());
             DownloadManager::Get().OnDownloadStarted(dl);
         }), nullptr);
 
@@ -415,7 +418,20 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
                 }
                 return FALSE;
             }
-            if (keyval == GDK_KEY_Escape) { self->HideUrlSuggestions(); return TRUE; }
+            if (keyval == GDK_KEY_Escape) {
+                self->HideUrlSuggestions();
+                // Adres boşsa (clear butonu ile silindiyse) önceki URL'yi geri yükle
+                const char* cur = gtk_editable_get_text(GTK_EDITABLE(self->url_entry_));
+                if ((!cur || !*cur) && !self->saved_url_.empty()) {
+                    gtk_editable_set_text(GTK_EDITABLE(self->url_entry_), self->saved_url_.c_str());
+                    self->saved_url_.clear();
+                }
+                gtk_widget_set_can_focus(self->url_entry_, FALSE);
+                gtk_widget_set_can_focus(self->url_entry_, TRUE);
+                if (self->active_tab_)
+                    gtk_widget_grab_focus(self->active_tab_->webview);
+                return TRUE;
+            }
             return FALSE;
         }), this);
     gtk_widget_add_controller(url_entry_, url_key);
@@ -452,6 +468,28 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
             static_cast<BrowserWindow*>(ud)->ToggleAiPanel();
         }), this);
     gtk_box_append(GTK_BOX(entry_row), ai_btn_);
+
+    // Klasör butonu — varsayılan dizini dosya yöneticisiyle açar
+    GtkWidget* folder_btn = gtk_button_new_from_icon_name("folder-symbolic");
+    gtk_widget_add_css_class(folder_btn, "flat");
+    gtk_widget_set_tooltip_text(folder_btn, "Klasörü Aç");
+    g_signal_connect(folder_btn, "clicked",
+        G_CALLBACK(+[](GtkButton*, gpointer) {
+            const std::string& cfg = SettingsManager::Get().Prefs().folder_btn_path;
+            std::string dir;
+            if (!cfg.empty()) {
+                dir = (cfg[0] == '~')
+                    ? std::string(g_get_home_dir()) + cfg.substr(1)
+                    : cfg;
+            } else {
+                dir = g_get_home_dir();
+            }
+            GFile* f = g_file_new_for_path(dir.c_str());
+            g_app_info_launch_default_for_uri(g_file_get_uri(f), nullptr, nullptr);
+            g_object_unref(f);
+        }), nullptr);
+    gtk_box_append(GTK_BOX(entry_row), folder_btn);
+
     gtk_box_append(GTK_BOX(url_bar), entry_row);
 
     gtk_box_append(GTK_BOX(content_box), url_bar);
@@ -594,16 +632,20 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_revealer_set_child(GTK_REVEALER(find_bar_), find_box);
     gtk_box_append(GTK_BOX(content_box), find_bar_);
 
-    // Status bar (fare hover URL)
+    // Status bar (fare hover URL) — GtkOverlay ile sayfa uzerine bindirilir, layout'u bozmaz
+    GtkWidget* overlay = gtk_overlay_new();
+    gtk_overlay_set_child(GTK_OVERLAY(overlay), content_box);
+
     status_bar_ = gtk_label_new("");
     gtk_label_set_ellipsize(GTK_LABEL(status_bar_), PANGO_ELLIPSIZE_END);
     gtk_label_set_xalign(GTK_LABEL(status_bar_), 0.0f);
     gtk_widget_add_css_class(status_bar_, "status-bar");
-    gtk_widget_set_hexpand(status_bar_, TRUE);
+    gtk_widget_set_halign(status_bar_, GTK_ALIGN_START);
+    gtk_widget_set_valign(status_bar_, GTK_ALIGN_END);
     gtk_widget_set_visible(status_bar_, FALSE);
-    gtk_box_append(GTK_BOX(content_box), status_bar_);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), status_bar_);
 
-    gtk_window_set_child(GTK_WINDOW(window_), content_box);
+    gtk_window_set_child(GTK_WINDOW(window_), overlay);
 
     // ── Signals ──
     g_signal_connect(url_entry_,  "activate", G_CALLBACK(OnUrlActivateCb), this);
@@ -841,6 +883,53 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
         }), this);
     gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(gesture));
 
+    // ── Sekme sürükle-bırak ────────────────────────────────────────────────
+    // Drag source: tab pointer'ını GValue ile taşı
+    GtkDragSource* drag_src = gtk_drag_source_new();
+    gtk_drag_source_set_actions(drag_src, GDK_ACTION_MOVE);
+    g_object_set_data(G_OBJECT(drag_src), "tab", tab);
+    g_object_set_data(G_OBJECT(drag_src), "bw",  this);
+    g_signal_connect(drag_src, "prepare",
+        G_CALLBACK(+[](GtkDragSource* src, double, double, gpointer) -> GdkContentProvider* {
+            auto* t = static_cast<Tab*>(g_object_get_data(G_OBJECT(src), "tab"));
+            GValue val = G_VALUE_INIT;
+            g_value_init(&val, G_TYPE_POINTER);
+            g_value_set_pointer(&val, t);
+            return gdk_content_provider_new_for_value(&val);
+        }), nullptr);
+    gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(drag_src));
+
+    // Drop target: başka bir tab'ı bırakınca konumu güncelle
+    GtkDropTarget* drop_tgt = gtk_drop_target_new(G_TYPE_POINTER, GDK_ACTION_MOVE);
+    g_object_set_data(G_OBJECT(drop_tgt), "tab", tab);
+    g_object_set_data(G_OBJECT(drop_tgt), "bw",  this);
+    g_signal_connect(drop_tgt, "drop",
+        G_CALLBACK(+[](GtkDropTarget* tgt, const GValue* val,
+                       double, double, gpointer) -> gboolean {
+            auto* self   = static_cast<BrowserWindow*>(g_object_get_data(G_OBJECT(tgt), "bw"));
+            auto* target = static_cast<Tab*>(g_object_get_data(G_OBJECT(tgt), "tab"));
+            if (!G_VALUE_HOLDS_POINTER(val)) return FALSE;
+            auto* dragged = static_cast<Tab*>(g_value_get_pointer(val));
+            if (!dragged || dragged == target) return FALSE;
+
+            // tabs_ vektöründe yerleri değiştir
+            auto& tabs = self->tabs_;
+            auto src_it = std::find(tabs.begin(), tabs.end(), dragged);
+            auto dst_it = std::find(tabs.begin(), tabs.end(), target);
+            if (src_it == tabs.end() || dst_it == tabs.end()) return FALSE;
+            int dst_idx = (int)(dst_it - tabs.begin());
+            tabs.erase(src_it);
+            tabs.insert(tabs.begin() + dst_idx, dragged);
+
+            // tab_box_ widget sırasını da güncelle
+            gtk_box_remove(GTK_BOX(self->tab_box_), dragged->tab_btn);
+            GtkWidget* ref = target->tab_btn;
+            // dst_idx'ten sonraki widget'ın önüne ekle
+            gtk_box_reorder_child_after(GTK_BOX(self->tab_box_), dragged->tab_btn, ref);
+            return TRUE;
+        }), nullptr);
+    gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(drop_tgt));
+
     gtk_box_append(GTK_BOX(tab_box_), row);
     tab->tab_btn = row;
 
@@ -923,14 +1012,7 @@ void BrowserWindow::SwitchToTab(Tab* tab) {
         gtk_button_set_label(GTK_BUTTON(zoom_reset_btn_), buf);
     }
 
-    const char* title = webkit_web_view_get_title(WEBKIT_WEB_VIEW(tab->webview));
-    std::string wt;
-    if (!title || std::string(title).empty() || std::string(title) == kAppName) {
-        wt = kAppName;
-    } else {
-        wt = std::string(title) + " — " + kAppName;
-    }
-    gtk_window_set_title(GTK_WINDOW(window_), wt.c_str());
+    // window title degistirilmiyor — her zaman sabit kAppName
 }
 
 void BrowserWindow::UpdateNavButtons() {
@@ -1153,15 +1235,8 @@ void BrowserWindow::OnTitleChanged(WebKitWebView* wv) {
     tab->title = title ? title : "";
     UpdateTabLabel(tab);
 
-    if (tab == active_tab_) {
-        std::string wt;
-        if (tab->title.empty() || tab->title == kAppName) {
-            wt = kAppName;
-        } else {
-            wt = tab->title + " — " + kAppName;
-        }
-        gtk_window_set_title(GTK_WINDOW(window_), wt.c_str());
-    }
+    // window title degistirilmiyor — baslik her zaman sabit kAppName kalir
+    (void)tab; // active_tab_ kontrolu UpdateTabLabel icin yeterli
 }
 
 void BrowserWindow::OnFaviconChanged(WebKitWebView* wv) {
@@ -1325,6 +1400,9 @@ void BrowserWindow::OnNewTabCb(GtkButton*, gpointer ud) {
 }
 void BrowserWindow::OnClearUrlCb(GtkButton*, gpointer ud) {
     auto* self = static_cast<BrowserWindow*>(ud);
+    // Mevcut URL'yi ESC geri yüklemesi için kaydet
+    const char* cur = gtk_editable_get_text(GTK_EDITABLE(self->url_entry_));
+    if (cur && *cur) self->saved_url_ = cur;
     gtk_editable_set_text(GTK_EDITABLE(self->url_entry_), "");
     gtk_widget_grab_focus(self->url_entry_);
 }
@@ -1703,52 +1781,6 @@ bool BrowserWindow::OnContextMenu(WebKitWebView* wv,
         g_object_unref(act_tr);
     }
 
-    // ── Her durumda: Sayfayı Özetle ──────────────────────────────────────────
-    if (webkit_context_menu_get_n_items(menu) > 0)
-        webkit_context_menu_append(menu, webkit_context_menu_item_new_separator());
-
-    GSimpleAction* act_sum = g_simple_action_new("ctx-ai-summarize", nullptr);
-    g_signal_connect(act_sum, "activate",
-        G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer ud) {
-            auto* self = static_cast<BrowserWindow*>(ud);
-            if (!self->active_tab_ || !self->active_tab_->webview) return;
-            // Reklamları ve gereksiz öğeleri soyarak sayfa metnini al
-            const char* js =
-                "(function(){"
-                "  var sel=['script','style','nav','header','footer',"
-                "    'aside','iframe','noscript','form','button',"
-                "    '[class*=\"ad\"]','[id*=\"ad\"]','[class*=\"banner\"]',"
-                "    '[class*=\"cookie\"]','[class*=\"popup\"]','[class*=\"modal\"]'];"
-                "  var clone=document.body.cloneNode(true);"
-                "  sel.forEach(function(s){"
-                "    clone.querySelectorAll(s).forEach(function(e){e.remove();});"
-                "  });"
-                "  return (clone.innerText||clone.textContent||'').trim().slice(0,6000);"
-                "})()";
-            webkit_web_view_evaluate_javascript(
-                WEBKIT_WEB_VIEW(self->active_tab_->webview),
-                js, -1, nullptr, nullptr, nullptr,
-                [](GObject* obj, GAsyncResult* res, gpointer ud2) {
-                    auto* self2 = static_cast<BrowserWindow*>(ud2);
-                    GError* err = nullptr;
-                    JSCValue* val = webkit_web_view_evaluate_javascript_finish(
-                        WEBKIT_WEB_VIEW(obj), res, &err);
-                    if (err) { g_error_free(err); return; }
-                    char* txt = jsc_value_to_string(val);
-                    g_object_unref(val);
-                    if (!txt || txt[0] == '\0') { g_free(txt); return; }
-                    std::string prompt = std::string(
-                        "Aşağıdaki sayfa içeriğini Türkçe olarak kısa ve öz şekilde özetle. "
-                        "Maddeler halinde, en fazla 8 madde:\n\n") + txt;
-                    g_free(txt);
-                    self2->ShowAiQuickPopup("Sayfa Özeti", prompt);
-                }, self);
-        }), this);
-    webkit_context_menu_append(menu,
-        webkit_context_menu_item_new_from_gaction(
-            G_ACTION(act_sum), "Sayfayı Özetle (AI)", nullptr));
-    g_object_unref(act_sum);
-
     return false;
 }
 
@@ -1882,6 +1914,45 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
             if (t) self->SwitchToTab(t);
         }), this);
     gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(gesture));
+
+    // ── Sekme sürükle-bırak ────────────────────────────────────────────────
+    GtkDragSource* drag_src2 = gtk_drag_source_new();
+    gtk_drag_source_set_actions(drag_src2, GDK_ACTION_MOVE);
+    g_object_set_data(G_OBJECT(drag_src2), "tab", tab);
+    g_object_set_data(G_OBJECT(drag_src2), "bw",  this);
+    g_signal_connect(drag_src2, "prepare",
+        G_CALLBACK(+[](GtkDragSource* src, double, double, gpointer) -> GdkContentProvider* {
+            auto* t = static_cast<Tab*>(g_object_get_data(G_OBJECT(src), "tab"));
+            GValue val = G_VALUE_INIT;
+            g_value_init(&val, G_TYPE_POINTER);
+            g_value_set_pointer(&val, t);
+            return gdk_content_provider_new_for_value(&val);
+        }), nullptr);
+    gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(drag_src2));
+
+    GtkDropTarget* drop_tgt2 = gtk_drop_target_new(G_TYPE_POINTER, GDK_ACTION_MOVE);
+    g_object_set_data(G_OBJECT(drop_tgt2), "tab", tab);
+    g_object_set_data(G_OBJECT(drop_tgt2), "bw",  this);
+    g_signal_connect(drop_tgt2, "drop",
+        G_CALLBACK(+[](GtkDropTarget* tgt, const GValue* val,
+                       double, double, gpointer) -> gboolean {
+            auto* self   = static_cast<BrowserWindow*>(g_object_get_data(G_OBJECT(tgt), "bw"));
+            auto* target = static_cast<Tab*>(g_object_get_data(G_OBJECT(tgt), "tab"));
+            if (!G_VALUE_HOLDS_POINTER(val)) return FALSE;
+            auto* dragged = static_cast<Tab*>(g_value_get_pointer(val));
+            if (!dragged || dragged == target) return FALSE;
+            auto& tabs = self->tabs_;
+            auto src_it = std::find(tabs.begin(), tabs.end(), dragged);
+            auto dst_it = std::find(tabs.begin(), tabs.end(), target);
+            if (src_it == tabs.end() || dst_it == tabs.end()) return FALSE;
+            int dst_idx = (int)(dst_it - tabs.begin());
+            tabs.erase(src_it);
+            tabs.insert(tabs.begin() + dst_idx, dragged);
+            gtk_box_remove(GTK_BOX(self->tab_box_), dragged->tab_btn);
+            gtk_box_reorder_child_after(GTK_BOX(self->tab_box_), dragged->tab_btn, target->tab_btn);
+            return TRUE;
+        }), nullptr);
+    gtk_widget_add_controller(row, GTK_EVENT_CONTROLLER(drop_tgt2));
 
     gtk_box_append(GTK_BOX(tab_box_), row);
     tab->tab_btn = row;
@@ -2044,6 +2115,7 @@ static std::string SettingsSidebarNav(const std::string& active) {
         "<a href=\"ferman://ayarlar/gizlilik\""   + a("gizlilik")   + ">🔒 Gizlilik</a>"
         "<a href=\"ferman://ayarlar/gelismis\""   + a("gelismis")   + ">⚙ Gelişmiş</a>"
         "<a href=\"ferman://ayarlar/yapay-zeka\"" + a("yapay-zeka") + ">🤖 Yapay Zeka</a>"
+        "<a href=\"ferman://ayarlar/favoriler\""   + a("favoriler")  + ">❤️ Favoriler</a>"
         "<div class=\"divider\"></div>"
         "<a href=\"ferman://ayarlar/hakkimizda\"" + a("hakkimizda") + ">ℹ Hakkımızda</a>";
 }
@@ -2186,6 +2258,10 @@ function pickFolder(){
   var cur=document.getElementById('dldir').value||'';
   window.location.href='ferman://pick-download-dir?cur='+encodeURIComponent(cur);
 }
+function pickFolderBtn(){
+  var cur=document.getElementById('folderbtn').value||'';
+  window.location.href='ferman://pick-folder-btn?cur='+encodeURIComponent(cur);
+}
 function save(e){e.preventDefault();
   try {
     var hp=document.getElementById('homepage').value;
@@ -2194,12 +2270,16 @@ function save(e){e.preventDefault();
     var hw=document.getElementById('hw').checked?1:0;
     var se=document.getElementById('se').value;
     var dldir=document.getElementById('dldir').value;
+    var askdl=document.getElementById('askdl').checked?1:0;
+    var folderbtn=document.getElementById('folderbtn').value;
     var histdays=document.getElementById('histdays').value;
     var maxtabs=document.getElementById('maxtabs').value;
     var restore=document.getElementById('restore').checked?1:0;
     window.location.href='ferman://ayarlar-kaydet?hp='+encodeURIComponent(hp)
       +'&zoom='+zoom+'&js='+js+'&hw='+hw+'&se='+se
       +'&dldir='+encodeURIComponent(dldir)
+      +'&askdl='+askdl
+      +'&folderbtn='+encodeURIComponent(folderbtn)
       +'&histdays='+histdays+'&maxtabs='+maxtabs+'&restore='+restore;
     showToast('Ayarlar başarıyla kaydedildi.', true);
   } catch(err) {
@@ -2709,6 +2789,24 @@ std::string BrowserWindow::BuildAdvancedSettingsHTML() {
         </button>
       </div>
     </div>
+    <div class="row">
+      <label>İndirmeden Önce Konum Sor</label>
+      <label class="toggle"><input type="checkbox" id="askdl" )css" +
+        std::string(p.ask_download_location ? "checked" : "") + R"css(>
+      <span class="slider"></span></label>
+    </div>
+    <div class="row">
+      <label>Klasör Butonu Konumu</label>
+      <div style="display:flex;gap:6px;align-items:center;flex:1">
+        <input type="text" id="folderbtn" placeholder="Varsayılan: Ana Dizin"
+          style="flex:1" value=")css" + p.folder_btn_path + R"css(">
+        <button type="button" onclick="pickFolderBtn()"
+          style="padding:7px 14px;border:1.5px solid #e0e0e0;border-radius:8px;
+          background:#fafafa;cursor:pointer;font-size:.84rem;white-space:nowrap">
+          &#128193; Seç
+        </button>
+      </div>
+    </div>
   </div>
   <div class="card">
     <h3>Geçmiş</h3>
@@ -2748,15 +2846,28 @@ function toast(msg,ok){
   t.style.opacity='1';t.style.transform='translateY(0)';
   setTimeout(function(){t.style.opacity='0';t.style.transform='translateY(12px)';},3000);
 }
+function pickFolder(){
+  var cur=document.getElementById('dldir').value||'';
+  window.location.href='ferman://pick-download-dir?cur='+encodeURIComponent(cur);
+}
+function pickFolderBtn(){
+  var cur=document.getElementById('folderbtn').value||'';
+  window.location.href='ferman://pick-folder-btn?cur='+encodeURIComponent(cur);
+}
 function saveAdv(e){
   e.preventDefault();
   try{
     var js=document.getElementById('js').checked?1:0;
     var hw=document.getElementById('hw').checked?1:0;
     var dldir=document.getElementById('dldir').value;
+    var askdl=document.getElementById('askdl').checked?1:0;
+    var folderbtn=document.getElementById('folderbtn').value;
     var histdays=document.getElementById('histdays').value;
     window.location.href='ferman://ayarlar-kaydet?js='+js+'&hw='+hw
-      +'&dldir='+encodeURIComponent(dldir)+'&histdays='+histdays;
+      +'&dldir='+encodeURIComponent(dldir)
+      +'&askdl='+askdl
+      +'&folderbtn='+encodeURIComponent(folderbtn)
+      +'&histdays='+histdays;
     toast('Gelişmiş ayarlar kaydedildi.',true);
   }catch(err){toast('Hata oluştu!',false);}
 }
@@ -2799,15 +2910,42 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
         ".tipbox{background:#f5f9ff;border:1px solid #d8eaff;border-radius:8px;padding:12px 16px;margin-top:12px}"
         ".tipbox code{background:#e8f0fe;padding:1px 5px;border-radius:3px;font-size:.82rem}";
 
+    const std::string& def_id = AiAgentStore::Get().DefaultId();
+
+    // JS escape helper
+    auto je = [](const std::string& s) -> std::string {
+        std::string r;
+        for (char c : s) {
+            if      (c == '\'') r += "\\'";
+            else if (c == '\\') r += "\\\\";
+            else if (c == '\n') r += "\\n";
+            else                r += c;
+        }
+        return r;
+    };
+
     std::string html;
     html  = "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"UTF-8\">";
-    html += "<title>Yapay Zeka \xe2\x80\x94 Ayarlar</title><style>" + css + "</style></head><body>\n";
+    html += "<title>Yapay Zeka \xe2\x80\x94 Ayarlar</title><style>" + css + R"css(
+.b-ferman{background:#fce4ec;color:#880e4f}
+.def-badge{background:#a6e3a1;color:#1a4731;font-size:.7rem;padding:2px 7px;
+  border-radius:99px;font-weight:700;margin-left:5px}
+.defbtn{background:#e8f5e9;border:1px solid #a5d6a7;border-radius:5px;
+  padding:3px 9px;font-size:.76rem;cursor:pointer;color:#2e7d32}
+.defbtn:hover{background:#c8e6c9}
+.defbtn.active-def{background:#a6e3a1;color:#1a4731;font-weight:700}
+.fr select{padding:7px 10px;border:1px solid #d0d0d0;border-radius:6px;
+  font-size:.87rem;color:#222;background:#fff;width:100%}
+.fr select:focus{outline:none;border-color:#7ab0f0;box-shadow:0 0 0 2px #ddeeff}
+.token-warn{background:#fff8e1;border:1px solid #ffe082;border-radius:6px;
+  padding:8px 12px;font-size:.79rem;color:#7b5800;margin-top:4px;display:none}
+)css" + "</style></head><body>\n";
     html += "<div class=\"sidebar\"><h1>\xe2\x9a\x99 Ayarlar</h1><nav>";
     html += SettingsSidebarNav("yapay-zeka");
     html += "</nav></div>\n<div class=\"main\">\n";
     html += "<h2>Yapay Zeka Ajanlar\xc4\xb1</h2>\n";
     html += "<p class=\"subtitle\">Her ajan kendi API anahtarı ve modeliyle çalışır. "
-            "Provider, API anahtarından otomatik belirlenir.</p>\n";
+            "Varsayılan ajan, ajan seçilmeden gönderilen sohbetlerde kullanılır.</p>\n";
 
     // Ajan tablosu
     html += "<div class=\"card\" style=\"padding:0;overflow:hidden\">\n";
@@ -2816,7 +2954,7 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
                 "Henüz ajan eklenmemiş. Aşağıdaki formdan ekleyebilirsiniz.</p>\n";
     } else {
         html += "<table class=\"agent-tbl\"><thead><tr>"
-                "<th>Ajan \xc4\xb0smi</th><th>Provider</th><th>Model</th><th>API URL</th><th></th>"
+                "<th>Ajan</th><th>Provider</th><th>Model</th><th>Varsay\xc4\xb1lan</th><th></th>"
                 "</tr></thead><tbody>\n";
         for (const auto& a : agents) {
             std::string prov = AiAgent::DetectProvider(a.api_key);
@@ -2826,17 +2964,22 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
             else if (prov == "deepseek")   bc = "b-deepseek";
             else if (prov == "groq")       bc = "b-groq";
             else if (prov == "openrouter") bc = "b-openrouter";
-            std::string url_disp = a.api_url.empty()
-                ? "<span style=\"color:#bbb\">varsay\xc4\xb1lan</span>" : a.api_url;
+            else if (prov == "ferman")     bc = "b-ferman";
+            bool is_def = (a.id == def_id) || (def_id.empty() && &a == &agents[0]);
+            std::string def_mark = is_def
+                ? "<span class=\"def-badge\">\xe2\x98\x85 Varsay\xc4\xb1lan</span>" : "";
+            std::string def_btn_cls = is_def ? "defbtn active-def" : "defbtn";
+            std::string def_btn_lbl = is_def ? "\xe2\x98\x85 Varsay\xc4\xb1lan" : "Varsay\xc4\xb1lan Yap";
             html += "<tr>"
-                    "<td><strong>" + a.name + "</strong></td>"
+                    "<td><strong>" + a.name + "</strong>" + def_mark + "</td>"
                     "<td><span class=\"badge " + bc + "\">" + prov + "</span></td>"
                     "<td><code style=\"font-size:.79rem\">" + a.model + "</code></td>"
-                    "<td style=\"font-size:.78rem;color:#888\">" + url_disp + "</td>"
+                    "<td><button class=\"" + def_btn_cls + "\" "
+                        "onclick=\"setDefault('" + je(a.id) + "')\">" + def_btn_lbl + "</button></td>"
                     "<td><div class=\"row-btns\">"
-                    "<button class=\"ebtn\" onclick=\"editAgent('" + a.id + "','"
-                        + a.name + "','" + a.model + "','" + a.api_url + "')\">D\xc3\xbczenle</button>"
-                    "<button class=\"dbtn\" onclick=\"delAgent('" + a.id + "')\">Sil</button>"
+                    "<button class=\"ebtn\" onclick=\"editAgent('" + je(a.id) + "','"
+                        + je(a.name) + "','" + je(a.model) + "','" + je(a.api_url) + "','" + prov + "')\">D\xc3\xbczenle</button>"
+                    "<button class=\"dbtn\" onclick=\"delAgent('" + je(a.id) + "')\">Sil</button>"
                     "</div></td></tr>\n";
         }
         html += "</tbody></table>\n";
@@ -2848,16 +2991,37 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
             "<h3 id=\"ftitle\">Yeni Ajan Ekle</h3>\n"
             "<input type=\"hidden\" id=\"aid\" value=\"\">\n"
             "<div class=\"fr\"><label>Ajan \xc4\xb0smi</label>"
-            "<input id=\"aname\" placeholder=\"Örn: Benim GPT Asistanım\"></div>\n"
-            "<div class=\"fr\"><label>API Anahtarı</label>"
+            "<input id=\"aname\" placeholder=\"\xc3\x96rn: Benim GPT Asistan\xc4\xb1m\"></div>\n"
+            // Provider dropdown
+            "<div class=\"fr\"><label>Provider</label>"
+            "<select id=\"aprovider\" onchange=\"onProviderChange(this.value)\">"
+            "<option value=\"\">-- Se\xc3\xa7in --</option>"
+            "<option value=\"openai\">\xf0\x9f\x9f\xa2 OpenAI (GPT)</option>"
+            "<option value=\"anthropic\">\xf0\x9f\x9f\xa1 Anthropic (Claude)</option>"
+            "<option value=\"deepseek\">\xf0\x9f\x94\xb5 DeepSeek</option>"
+            "<option value=\"ferman\">\xe2\x9d\xa4 Ferman AI</option>"
+            "<option value=\"groq\">\xe2\x9a\xa1 Groq</option>"
+            "<option value=\"openrouter\">\xf0\x9f\x8c\x90 OpenRouter</option>"
+            "<option value=\"other\">\xe2\x9a\x99 Di\xc4\x9fer / \xc3\x96zel</option>"
+            "</select></div>\n"
+            // Model dropdown (provider'a göre dolar)
+            "<div class=\"fr\" id=\"model-row\">"
+            "<label>Model</label>"
+            "<select id=\"amodel-select\" onchange=\"onModelSelect(this.value)\" style=\"display:none\">"
+            "</select>"
+            "<input id=\"amodel\" placeholder=\"model-ismi\">"
+            "<div class=\"token-warn\" id=\"token-warn\">"
+            "\xe2\x9a\xa0\xef\xb8\x8f <strong>Token Tüketimi:</strong> <span id=\"token-info\"></span>"
+            "</div></div>\n"
+            // API Key
+            "<div class=\"fr\"><label>API Anahtar\xc4\xb1</label>"
             "<input type=\"password\" id=\"akey\" autocomplete=\"off\" "
-            "placeholder=\"sk-...  /  sk-ant-...  /  ds-...\" oninput=\"detectProv(this.value)\">"
-            "<span class=\"hint\" id=\"pdet\">Provider: otomatik belirlenecek</span></div>\n"
-            "<div class=\"fr\"><label>Model</label>"
-            "<input id=\"amodel\" placeholder=\"gpt-4o, deepseek-chat, claude-3-5-sonnet-20241022\"></div>\n"
+            "placeholder=\"sk-...  fai-...  ds-...\" oninput=\"onKeyInput(this.value)\">"
+            "<span class=\"hint\" id=\"pdet\">Provider: se\xc3\xa7imden otomatik belirlenir</span></div>\n"
+            // API URL
             "<div class=\"fr\"><label>API URL "
-            "<span style=\"font-size:.74rem;color:#bbb\">(isteğe bağlı, "
-            "boşsa varsayılan endpoint kullanılır)</span></label>"
+            "<span style=\"font-size:.74rem;color:#bbb\">(iste\xc4\x9fe ba\xc4\x9fl\xc4\xb1, "
+            "bo\xc5\x9fsa varsay\xc4\xb1lan endpoint kullan\xc4\xb1l\xc4\xb1r)</span></label>"
             "<input id=\"aurl\" placeholder=\"https://...\"></div>\n"
             "<div style=\"display:flex;gap:8px;margin-top:6px\">"
             "<button class=\"save-btn\" onclick=\"saveAgent()\">Kaydet</button>"
@@ -2868,11 +3032,11 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
 
     // Token ipuçları
     html += "<div class=\"tipbox\">\n"
-            "<strong style=\"font-size:.85rem;color:#1a6fcc\">Token İpuçları</strong>\n"
+            "<strong style=\"font-size:.85rem;color:#1a6fcc\">Token \xc4\xb0pu\xc3\xa7lar\xc4\xb1</strong>\n"
             "<ul style=\"margin:6px 0 0;padding-left:18px;font-size:.83rem;color:#555;line-height:1.9\">\n"
-            "<li><code>@ajan-ismi</code> \xe2\x80\x94 sohbette ajan seç</li>\n"
-            "<li><code>#1</code> \xe2\x80\x94 sekme #1 URL içeriğini dahil et</li>\n"
-            "<li><code>*5</code> \xe2\x80\x94 sohbet #5'i bağlam olarak ekle</li>\n"
+            "<li><code>@ajan-ismi</code> \xe2\x80\x94 sohbette ajan se\xc3\xa7</li>\n"
+            "<li><code>#1</code> \xe2\x80\x94 sekme #1 URL i\xc3\xa7eri\xc4\x9fini dahil et</li>\n"
+            "<li><code>*5</code> \xe2\x80\x94 sohbet #5'i ba\xc4\x9flam olarak ekle</li>\n"
             "<li>\xf0\x9f\x93\x8e butonu ile PDF, DOCX, XLSX, resim ekleyebilirsiniz</li>\n"
             "</ul>\n</div>\n";
 
@@ -2883,57 +3047,335 @@ std::string BrowserWindow::BuildSettingsAiHTML() {
             "display:flex;align-items:center;gap:9px;opacity:0;transform:translateY(8px);"
             "transition:opacity .22s,transform .22s;pointer-events:none\">"
             "<span id=\"ti\">\xe2\x9c\x93</span><span id=\"tm\">Kaydedildi.</span></div>\n";
-    html += "<script>\n"
-        "function detectProv(k){\n"
-        "  var p='deepseek';\n"
-        "  if(k.indexOf('sk-ant-')===0)p='anthropic';\n"
-        "  else if(k.indexOf('sk-or-')===0)p='openrouter';\n"
-        "  else if(k.indexOf('gsk_')===0)p='groq';\n"
-        "  else if(k.indexOf('ds-')===0)p='deepseek';\n"
-        "  else if(k.indexOf('sk-')===0)p='openai';\n"
-        "  document.getElementById('pdet').textContent='Provider: '+p;\n"
-        "}\n"
-        "function toast(msg,ok){\n"
-        "  var t=document.getElementById('toast');\n"
-        "  document.getElementById('ti').textContent=ok?'\\u2713':'\\u2717';\n"
-        "  document.getElementById('tm').textContent=msg;\n"
-        "  t.style.opacity='1';t.style.transform='translateY(0)';\n"
-        "  setTimeout(function(){t.style.opacity='0';t.style.transform='translateY(8px)';},2600);\n"
-        "}\n"
-        "function saveAgent(){\n"
-        "  var id=document.getElementById('aid').value;\n"
-        "  var name=document.getElementById('aname').value.trim();\n"
-        "  var key=document.getElementById('akey').value.trim();\n"
-        "  var model=document.getElementById('amodel').value.trim();\n"
-        "  var url=document.getElementById('aurl').value.trim();\n"
-        "  if(!name){toast('Ajan ismi gerekli!',false);return;}\n"
-        "  window.location.href='ferman://ai-ajan-kaydet'"
-        "    +'?id='+encodeURIComponent(id)"
-        "    +'&name='+encodeURIComponent(name)"
-        "    +'&key='+encodeURIComponent(key)"
-        "    +'&model='+encodeURIComponent(model)"
-        "    +'&url='+encodeURIComponent(url);\n"
-        "}\n"
-        "function editAgent(id,name,model,url){\n"
-        "  document.getElementById('aid').value=id;\n"
-        "  document.getElementById('aname').value=name;\n"
-        "  document.getElementById('akey').value='';\n"
-        "  document.getElementById('amodel').value=model;\n"
-        "  document.getElementById('aurl').value=url;\n"
-        "  document.getElementById('ftitle').textContent='Ajan D\\u00fczenle';\n"
-        "  document.getElementById('aform').scrollIntoView({behavior:'smooth'});\n"
-        "}\n"
-        "function delAgent(id){\n"
-        "  if(confirm('Bu ajan\\u0131 silmek istedi\\u011finizden emin misiniz?'))\n"
-        "    window.location.href='ferman://ai-ajan-sil?id='+encodeURIComponent(id);\n"
-        "}\n"
-        "function resetForm(){\n"
-        "  ['aid','aname','akey','amodel','aurl'].forEach(function(x){"
-        "document.getElementById(x).value='';});\n"
-        "  document.getElementById('pdet').textContent='Provider: otomatik belirlenecek';\n"
-        "  document.getElementById('ftitle').textContent='Yeni Ajan Ekle';\n"
-        "}\n"
-        "</script>\n</div></body></html>";
+    html += R"html(<script>
+// Model listeleri
+var MODELS = {
+  openai:     [{v:'gpt-4o',l:'GPT-4o',tk:'~128k ctx, görüntü destekli, pahalı'},
+               {v:'gpt-4o-mini',l:'GPT-4o Mini',tk:'~128k ctx, ekonomik'},
+               {v:'gpt-4-turbo',l:'GPT-4 Turbo',tk:'~128k ctx'},
+               {v:'gpt-3.5-turbo',l:'GPT-3.5 Turbo',tk:'~16k ctx, çok ekonomik'},
+               {v:'o1',l:'o1',tk:'Akıl yürütme modeli, çok pahalı'},
+               {v:'o1-mini',l:'o1-mini',tk:'Ekonomik akıl yürütme'}],
+  anthropic:  [{v:'claude-opus-4-5',l:'Claude Opus 4.5',tk:'~200k ctx, en güçlü, pahalı'},
+               {v:'claude-sonnet-4-5',l:'Claude Sonnet 4.5',tk:'~200k ctx, dengeli'},
+               {v:'claude-haiku-3-5',l:'Claude Haiku 3.5',tk:'~200k ctx, hızlı ve ekonomik'}],
+  deepseek:   [{v:'deepseek-chat',l:'DeepSeek Chat (V3)',tk:'~64k ctx, ekonomik'},
+               {v:'deepseek-reasoner',l:'DeepSeek Reasoner (R1)',tk:'~64k ctx, akıl yürütme'}],
+  ferman:     [{v:'qwen2.5:7b',l:'Qwen 2.5 7B',tk:'~32k ctx, yerel model, ücretsiz'},
+               {v:'qwen2.5:14b',l:'Qwen 2.5 14B',tk:'~32k ctx, daha güçlü, fazla RAM'},
+               {v:'qwen2.5:32b',l:'Qwen 2.5 32B',tk:'~32k ctx, en güçlü Qwen, çok fazla RAM'},
+               {v:'llama3.2:3b',l:'Llama 3.2 3B',tk:'~128k ctx, hafif ve hızlı'},
+               {v:'llama3.1:8b',l:'Llama 3.1 8B',tk:'~128k ctx, dengeli'}],
+  groq:       [{v:'llama-3.3-70b-versatile',l:'Llama 3.3 70B',tk:'~128k ctx, çok hızlı'},
+               {v:'llama-3.1-8b-instant',l:'Llama 3.1 8B Instant',tk:'~128k ctx, ultra hızlı'},
+               {v:'mixtral-8x7b-32768',l:'Mixtral 8x7B',tk:'~32k ctx'},
+               {v:'gemma2-9b-it',l:'Gemma 2 9B',tk:'~8k ctx'}],
+  openrouter: [{v:'meta-llama/llama-3.3-70b-instruct',l:'Llama 3.3 70B',tk:'Ücretsiz tier mevcut'},
+               {v:'google/gemini-2.0-flash-exp:free',l:'Gemini 2.0 Flash',tk:'Ücretsiz'},
+               {v:'deepseek/deepseek-chat',l:'DeepSeek Chat',tk:'Ekonomik'},
+               {v:'anthropic/claude-3.5-sonnet',l:'Claude 3.5 Sonnet',tk:'Pahalı'}],
+  other:      []
+};
+
+function onProviderChange(prov) {
+  var sel = document.getElementById('amodel-select');
+  var inp = document.getElementById('amodel');
+  var warn = document.getElementById('token-warn');
+  var info = document.getElementById('token-info');
+  sel.innerHTML = '';
+  if (MODELS[prov] && MODELS[prov].length > 0) {
+    var opt0 = document.createElement('option');
+    opt0.value = ''; opt0.textContent = '-- Model seçin --';
+    sel.appendChild(opt0);
+    MODELS[prov].forEach(function(m) {
+      var o = document.createElement('option');
+      o.value = m.v; o.textContent = m.l; o.dataset.tk = m.tk;
+      sel.appendChild(o);
+    });
+    sel.style.display = 'block';
+    inp.style.display = 'none';
+    inp.value = '';
+    warn.style.display = 'none';
+  } else {
+    sel.style.display = 'none';
+    inp.style.display = 'block';
+    warn.style.display = 'none';
+  }
+  // API URL otomatik doldur
+  var urlMap = {
+    openai:'https://api.openai.com/v1',
+    anthropic:'https://api.anthropic.com/v1',
+    deepseek:'https://api.deepseek.com/v1',
+    ferman:'https://api.ferman.net.tr/v1',
+    groq:'https://api.groq.com/openai/v1',
+    openrouter:'https://openrouter.ai/api/v1'
+  };
+  var urlEl = document.getElementById('aurl');
+  if (urlMap[prov] && !urlEl.value) urlEl.value = urlMap[prov];
+  document.getElementById('pdet').textContent = prov ? 'Provider: ' + prov : 'Provider: seçimden otomatik belirlenir';
+}
+
+function onModelSelect(val) {
+  var sel = document.getElementById('amodel-select');
+  var inp = document.getElementById('amodel');
+  var warn = document.getElementById('token-warn');
+  var info = document.getElementById('token-info');
+  inp.value = val;
+  if (val) {
+    var opt = sel.querySelector('option[value="'+val+'"]');
+    if (opt && opt.dataset.tk) {
+      info.textContent = opt.dataset.tk;
+      warn.style.display = 'block';
+    }
+  } else {
+    warn.style.display = 'none';
+  }
+}
+
+function onKeyInput(k) {
+  var prov = 'deepseek';
+  if (k.indexOf('fai-')===0) prov='ferman';
+  else if (k.indexOf('sk-ant-')===0) prov='anthropic';
+  else if (k.indexOf('sk-or-')===0) prov='openrouter';
+  else if (k.indexOf('gsk_')===0) prov='groq';
+  else if (k.indexOf('ds-')===0) prov='deepseek';
+  else if (k.indexOf('sk-')===0) prov='openai';
+  document.getElementById('pdet').textContent = 'Provider: ' + prov;
+  // Provider dropdown'u güncelle
+  var ps = document.getElementById('aprovider');
+  if (ps && ps.value !== prov) { ps.value = prov; onProviderChange(prov); }
+}
+
+function toast(msg,ok) {
+  var t=document.getElementById('toast');
+  document.getElementById('ti').textContent=ok?'\u2713':'\u2717';
+  document.getElementById('tm').textContent=msg;
+  t.style.opacity='1';t.style.transform='translateY(0)';
+  setTimeout(function(){t.style.opacity='0';t.style.transform='translateY(8px)';},2600);
+}
+
+function saveAgent() {
+  var id=document.getElementById('aid').value;
+  var name=document.getElementById('aname').value.trim();
+  var key=document.getElementById('akey').value.trim();
+  var model=document.getElementById('amodel').value.trim();
+  var url=document.getElementById('aurl').value.trim();
+  if(!name){toast('Ajan ismi gerekli!',false);return;}
+  if(!model){toast('Model seçilmeli!',false);return;}
+  window.location.href='ferman://ai-ajan-kaydet'
+    +'?id='+encodeURIComponent(id)
+    +'&name='+encodeURIComponent(name)
+    +'&key='+encodeURIComponent(key)
+    +'&model='+encodeURIComponent(model)
+    +'&url='+encodeURIComponent(url);
+}
+
+function editAgent(id,name,model,url,prov) {
+  document.getElementById('aid').value=id;
+  document.getElementById('aname').value=name;
+  document.getElementById('akey').value='';
+  document.getElementById('aurl').value=url;
+  document.getElementById('ftitle').textContent='Ajan D\u00fczenle';
+  // Provider seç
+  var ps=document.getElementById('aprovider');
+  if(ps && prov){ps.value=prov; onProviderChange(prov);}
+  // Model
+  var ms=document.getElementById('amodel-select');
+  var mi=document.getElementById('amodel');
+  mi.value=model;
+  if(ms && ms.style.display!='none'){
+    ms.value=model; onModelSelect(model);
+  }
+  document.getElementById('aform').scrollIntoView({behavior:'smooth'});
+}
+
+function setDefault(id) {
+  window.location.href='ferman://ai-ajan-varsayilan?id='+encodeURIComponent(id);
+}
+
+function delAgent(id) {
+  if(confirm('Bu ajan\u0131 silmek istedi\u011finizden emin misiniz?'))
+    window.location.href='ferman://ai-ajan-sil?id='+encodeURIComponent(id);
+}
+
+function resetForm() {
+  ['aid','aname','akey','amodel','aurl'].forEach(function(x){document.getElementById(x).value='';});
+  var ps=document.getElementById('aprovider');
+  if(ps) ps.value='';
+  var ms=document.getElementById('amodel-select');
+  if(ms){ms.style.display='none'; ms.innerHTML='';}
+  document.getElementById('amodel').style.display='block';
+  document.getElementById('token-warn').style.display='none';
+  document.getElementById('pdet').textContent='Provider: seçimden otomatik belirlenir';
+  document.getElementById('ftitle').textContent='Yeni Ajan Ekle';
+}
+</script></div></body></html>)html";
+    return html;
+}
+
+std::string BrowserWindow::BuildSettingsBookmarksHTML() {
+    const auto& bmarks  = BookmarkManager::Get().All();
+    const auto  folders = BookmarkManager::Get().GetFolders();
+
+    // HTML escape
+    auto he = [](const std::string& s) -> std::string {
+        std::string r;
+        for (char c : s) {
+            if      (c == '<')  r += "&lt;";
+            else if (c == '>')  r += "&gt;";
+            else if (c == '&')  r += "&amp;";
+            else if (c == '"')  r += "&quot;";
+            else                r += c;
+        }
+        return r;
+    };
+    // JS escape
+    auto je = [](const std::string& s) -> std::string {
+        std::string r;
+        for (char c : s) {
+            if      (c == '\'') r += "\\'";
+            else if (c == '\\') r += "\\\\";
+            else if (c == '\n') r += "\\n";
+            else                r += c;
+        }
+        return r;
+    };
+
+    std::string html = "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"UTF-8\">"
+        "<title>Favoriler \xe2\x80\x94 Ayarlar</title>"
+        "<style>" + SettingsSidebarCSS() + R"css(
+.folder-tree{list-style:none;padding:0;margin:0}
+.folder-item{display:flex;align-items:center;gap:8px;padding:7px 10px;
+  border-bottom:1px solid #f2f2f2;font-size:.88rem}
+.folder-item:hover{background:#f5f9ff}
+.folder-indent{display:inline-block;width:18px}
+.folder-actions{margin-left:auto;display:flex;gap:4px}
+.folder-actions button{font-size:.75rem;padding:2px 8px;border:1px solid #e0e0e0;
+  border-radius:6px;background:#fafafa;cursor:pointer}
+.folder-actions button:hover{background:#eee}
+.folder-actions .del-btn{color:#c0392b;border-color:#f5c6cb}
+.add-folder-form{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.add-folder-form input{flex:1;min-width:160px}
+.add-folder-form select{flex:1;min-width:120px}
+.bm-count{font-size:.78rem;color:#aaa;margin-left:4px}
+)css" + "</style></head><body>\n"
+        "<div class=\"sidebar\"><h1>\xe2\x9a\x99 Ayarlar</h1><nav>"
+        + SettingsSidebarNav("favoriler") +
+        "</nav></div>\n<div class=\"main\">\n"
+        "<h2>Favori Klas\xc3\xb6r Y\xc3\xb6netimi</h2>\n";
+
+    // Klasör ağacı
+    html += "<div class=\"card\"><h3>Klas\xc3\xb6rler</h3>";
+    if (folders.empty()) {
+        html += "<p style=\"color:#aaa;font-size:.88rem\">Hen\xc3\xbcz klas\xc3\xb6r yok.</p>";
+    } else {
+        html += "<ul class=\"folder-tree\">";
+        for (const auto& f : folders) {
+            // Girinti hesapla
+            int depth = 0;
+            for (char c : f.name) if (c == '/') ++depth;
+            // Klasör içindeki yer imi sayısı
+            int cnt = 0;
+            for (const auto& b : bmarks)
+                if (b.folder == f.name) ++cnt;
+
+            html += "<li class=\"folder-item\">";
+            for (int i = 0; i < depth; ++i) html += "<span class=\"folder-indent\"></span>";
+            html += "\xf0\x9f\x93\x81 <strong>" + he(f.label) + "</strong>"
+                    "<span class=\"bm-count\">(" + std::to_string(cnt) + " yer imi)</span>"
+                    "<div class=\"folder-actions\">"
+                    "<button onclick=\"renameFolder('" + je(f.name) + "','" + je(f.label) + "')\">Yeniden Adland\xc4\xb1r</button>"
+                    "<button class=\"del-btn\" onclick=\"deleteFolder('" + je(f.name) + "')\">Sil</button>"
+                    "</div></li>\n";
+        }
+        html += "</ul>";
+    }
+
+    // Yeni klasör ekle formu
+    html += "<h3 style=\"margin-top:20px\">Yeni Klas\xc3\xb6r Ekle</h3>"
+            "<div class=\"add-folder-form\">"
+            "<input type=\"text\" id=\"newFolderName\" placeholder=\"Klas\xc3\xb6r ad\xc4\xb1\xe2\x80\xa6\">"
+            "<select id=\"newFolderParent\">"
+            "<option value=\"\">\xe2\x80\x94 K\xc3\xb6k (\xc3\xbcst d\xc3\xbczey)</option>";
+    for (const auto& f : folders) {
+        int depth = 0;
+        for (char c : f.name) if (c == '/') ++depth;
+        if (depth >= 3) continue;  // max 4 seviye
+        std::string indent(depth * 2, '\xc2\xa0');
+        html += "<option value=\"" + he(f.name) + "\">" + indent + "\xf0\x9f\x93\x81 " + he(f.label) + "</option>";
+    }
+    html += "</select>"
+            "<button class=\"save-btn\" style=\"padding:8px 18px\" onclick=\"addFolder()\">+ Klas\xc3\xb6r Ekle</button>"
+            "</div></div>\n";
+
+    // Yer imleri listesi
+    html += "<div class=\"card\" style=\"margin-top:16px\"><h3>T\xc3\xbcm Yer \xc4\xb0mleri</h3>";
+    if (bmarks.empty()) {
+        html += "<p style=\"color:#aaa;font-size:.88rem\">Hen\xc3\xbcz yer imi yok.</p>";
+    } else {
+        html += "<table style=\"width:100%;border-collapse:collapse;font-size:.84rem\">"
+                "<tr style=\"border-bottom:2px solid #e8e8e8\">"
+                "<th style=\"text-align:left;padding:6px 8px\">Ba\xc5\x9fl\xc4\xb1k</th>"
+                "<th style=\"text-align:left;padding:6px 8px\">Klas\xc3\xb6r</th>"
+                "<th style=\"padding:6px 8px\">Klas\xc3\xb6re Ta\xc5\x9f\xc4\xb1</th></tr>";
+        for (const auto& bm : bmarks) {
+            std::string t = bm.title.empty() ? bm.url : bm.title;
+            if (t.size() > 40) t = t.substr(0, 38) + "\xe2\x80\xa6";
+            html += "<tr style=\"border-bottom:1px solid #f2f2f2\">"
+                    "<td style=\"padding:5px 8px\" title=\"" + he(bm.url) + "\">" + he(t) + "</td>"
+                    "<td style=\"padding:5px 8px;color:#777\">" +
+                    (bm.folder.empty() ? "<em>K\xc3\xb6k</em>" : "\xf0\x9f\x93\x81 " + he(bm.folder)) +
+                    "</td><td style=\"padding:5px 8px;text-align:center\">"
+                    "<select onchange=\"moveBm('" + je(bm.url) + "',this.value)\" style=\"font-size:.8rem\">"
+                    "<option value=\"\">K\xc3\xb6k</option>";
+            for (const auto& f : folders) {
+                std::string sel = (bm.folder == f.name) ? " selected" : "";
+                html += "<option value=\"" + he(f.name) + "\"" + sel + ">" + he(f.label) + "</option>";
+            }
+            html += "</select></td></tr>\n";
+        }
+        html += "</table>";
+    }
+    html += "</div>\n";
+
+    html += R"html(
+<div id="toast" style="position:fixed;bottom:28px;right:28px;z-index:9999;
+  background:#1e1e2e;color:#cdd6f4;padding:13px 22px;border-radius:12px;
+  box-shadow:0 4px 24px rgba(0,0,0,.28);font-size:.88rem;font-weight:600;
+  display:flex;align-items:center;gap:10px;opacity:0;transform:translateY(12px);
+  transition:opacity .28s,transform .28s;pointer-events:none;min-width:200px">
+  <span id="ti">✓</span><span id="tm">Kaydedildi.</span>
+</div>
+<script>
+function toast(msg,ok){
+  var t=document.getElementById('toast');
+  document.getElementById('ti').textContent=ok?'✓':'✗';
+  document.getElementById('ti').style.color=ok?'#a6e3a1':'#f38ba8';
+  document.getElementById('tm').textContent=msg;
+  t.style.opacity='1';t.style.transform='translateY(0)';
+  setTimeout(function(){t.style.opacity='0';t.style.transform='translateY(12px)';},2800);
+}
+function addFolder(){
+  var name=document.getElementById('newFolderName').value.trim();
+  var parent=document.getElementById('newFolderParent').value;
+  if(!name){toast('Klasör adı boş olamaz.',false);return;}
+  var path=parent?parent+'/'+name:name;
+  window.location.href='ferman://favori-klasor-ekle?path='+encodeURIComponent(path);
+}
+function deleteFolder(path){
+  if(!confirm('Bu klasörü silmek istiyor musunuz?\nİçindeki yer imleri köke taşınacak.'))return;
+  window.location.href='ferman://favori-klasor-sil?path='+encodeURIComponent(path);
+}
+function renameFolder(path,curName){
+  var n=prompt('Yeni klasör adı:',curName);
+  if(!n||!n.trim())return;
+  window.location.href='ferman://favori-klasor-yeniden-adlandir?path='+encodeURIComponent(path)+'&name='+encodeURIComponent(n.trim());
+}
+function moveBm(url,folder){
+  window.location.href='ferman://favori-klasor?url='+encodeURIComponent(url)+'&folder='+encodeURIComponent(folder);
+}
+</script></div></body></html>)html";
+
     return html;
 }
 
@@ -3187,18 +3629,6 @@ static void BmShowContextMenu(BrowserWindow* self, GtkWidget* parent_w,
     g_signal_connect(move_btn, "clicked", G_CALLBACK(BmMoveClickCb), self);
     gtk_box_append(GTK_BOX(vbox), move_btn);
 
-    // Klasör oluştur (yeni klasör → url ile)
-    auto* mc_url2 = new std::string(url);
-    GtkWidget* newfolder_btn = gtk_button_new_with_label("Yeni klasör oluştur");
-    gtk_widget_add_css_class(newfolder_btn, "flat");
-    gtk_widget_set_halign(newfolder_btn, GTK_ALIGN_START);
-    g_object_set_data_full(G_OBJECT(newfolder_btn), "mc-url", mc_url2,
-        [](gpointer p){ delete static_cast<std::string*>(p); });
-    g_object_set_data(G_OBJECT(newfolder_btn), "ctx_pop", pop);
-    // Yeni klasör: BmMoveClickCb'yi kullan — folders boşsa direkt yeni klasör alanı gösterir
-    g_signal_connect(newfolder_btn, "clicked", G_CALLBACK(BmNewFolderClickCb), self);
-    gtk_box_append(GTK_BOX(vbox), newfolder_btn);
-
     // Sil
     auto* dctx = new BmDelCtx{ self, url };
     GtkWidget* del_btn = gtk_button_new_with_label("Sil");
@@ -3283,44 +3713,9 @@ static void BmFolderItemRightClickCb(GtkGestureClick* g, int, double, double, gp
     BmShowContextMenu(self, anchor ? anchor : w, std::string(url), title ? title : "");
 }
 
-// ── Favoriler bar'ı boş alan sağ tık → klasör oluştur ───────────────────────
-static void BmBarRightClickCb(GtkGestureClick* g, int, double, double, gpointer ud) {
-    auto* self = static_cast<BrowserWindow*>(ud);
-    GtkWidget* bar = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
-
-    GtkWidget* pop = gtk_popover_new();
-    gtk_popover_set_has_arrow(GTK_POPOVER(pop), FALSE);
-    gtk_widget_set_parent(pop, bar);
-
-    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_widget_set_margin_start(vbox, 8); gtk_widget_set_margin_end(vbox, 8);
-    gtk_widget_set_margin_top(vbox, 8);   gtk_widget_set_margin_bottom(vbox, 8);
-
-    GtkWidget* title_lbl = gtk_label_new("Yeni klasör oluştur:");
-    gtk_widget_set_halign(title_lbl, GTK_ALIGN_START);
-    GtkWidget* entry = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Klasör adı…");
-    gtk_widget_set_size_request(entry, 190, -1);
-
-    // url="" → sadece klasör adı kaydedilecek (ilerki siteler bu klasöre taşınabilir)
-    auto* nfctx = new BmNewFolderCtx{ self, "" };
-    g_object_set_data_full(G_OBJECT(entry), "nfctx", nfctx,
-        [](gpointer p){ delete static_cast<BmNewFolderCtx*>(p); });
-    g_object_set_data(G_OBJECT(entry), "fpop", pop);
-    g_object_set_data(G_OBJECT(pop), "entry_w", entry);
-
-    GtkWidget* save_btn = gtk_button_new_with_label("Oluştur");
-    gtk_widget_add_css_class(save_btn, "suggested-action");
-    g_object_set_data(G_OBJECT(save_btn), "nfctx", nfctx);
-    g_object_set_data(G_OBJECT(save_btn), "fpop",  pop);
-    g_signal_connect(save_btn, "clicked",  G_CALLBACK(BmNewFolderSaveCb),  nullptr);
-    g_signal_connect(entry,    "activate", G_CALLBACK(BmNewFolderEnterCb), nullptr);
-
-    gtk_box_append(GTK_BOX(vbox), title_lbl);
-    gtk_box_append(GTK_BOX(vbox), entry);
-    gtk_box_append(GTK_BOX(vbox), save_btn);
-    gtk_popover_set_child(GTK_POPOVER(pop), vbox);
-    gtk_popover_popup(GTK_POPOVER(pop));
+// ── Favoriler bar'ı sağ tık — klasör yönetimi artık Ayarlar'dan ────────────
+static void BmBarRightClickCb(GtkGestureClick*, int, double, double, gpointer) {
+    // Klasör yönetimi Ayarlar > Favoriler sayfasına taşındı
 }
 
 } // namespace ferman
@@ -3442,6 +3837,51 @@ void BrowserWindow::RebuildBookmarksBar() {
         gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(rclick), GDK_BUTTON_SECONDARY);
         g_signal_connect(rclick, "pressed", G_CALLBACK(ferman::BmRightClickCb), this);
         gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(rclick));
+
+        // Sürükle-bırak: favori sıralama
+        {
+            auto* bm_url_s = new std::string(bm.url);
+            GtkDragSource* bm_src = gtk_drag_source_new();
+            gtk_drag_source_set_actions(bm_src, GDK_ACTION_MOVE);
+            g_object_set_data_full(G_OBJECT(bm_src), "bm-url", bm_url_s,
+                [](gpointer p){ delete static_cast<std::string*>(p); });
+            g_signal_connect(bm_src, "prepare",
+                G_CALLBACK(+[](GtkDragSource* src, double, double, gpointer) -> GdkContentProvider* {
+                    auto* u = static_cast<std::string*>(g_object_get_data(G_OBJECT(src), "bm-url"));
+                    GValue val = G_VALUE_INIT;
+                    g_value_init(&val, G_TYPE_POINTER);
+                    g_value_set_pointer(&val, u);
+                    return gdk_content_provider_new_for_value(&val);
+                }), nullptr);
+            gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(bm_src));
+
+            auto* drop_url_s = new std::string(bm.url);
+            GtkDropTarget* bm_tgt = gtk_drop_target_new(G_TYPE_POINTER, GDK_ACTION_MOVE);
+            g_object_set_data_full(G_OBJECT(bm_tgt), "bm-url", drop_url_s,
+                [](gpointer p){ delete static_cast<std::string*>(p); });
+            g_object_set_data(G_OBJECT(bm_tgt), "bw", this);
+            g_signal_connect(bm_tgt, "drop",
+                G_CALLBACK(+[](GtkDropTarget* tgt, const GValue* val,
+                               double, double, gpointer) -> gboolean {
+                    if (!G_VALUE_HOLDS_POINTER(val)) return FALSE;
+                    auto* dragged_url = static_cast<std::string*>(g_value_get_pointer(val));
+                    auto* target_url  = static_cast<std::string*>(
+                        g_object_get_data(G_OBJECT(tgt), "bm-url"));
+                    auto* self2 = static_cast<BrowserWindow*>(
+                        g_object_get_data(G_OBJECT(tgt), "bw"));
+                    if (!dragged_url || !target_url || *dragged_url == *target_url) return FALSE;
+                    // Hedef favori'nin index'ini bul
+                    const auto& all = BookmarkManager::Get().All();
+                    int dst_idx = 0;
+                    for (int i = 0; i < (int)all.size(); ++i)
+                        if (all[i].url == *target_url) { dst_idx = i; break; }
+                    BookmarkManager::Get().ReorderBookmark(*dragged_url, dst_idx);
+                    self2->RebuildBookmarksBar();
+                    return TRUE;
+                }), nullptr);
+            gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(bm_tgt));
+        }
+
         gtk_box_append(GTK_BOX(bookmarks_box_), btn);
 
     }
@@ -4436,7 +4876,8 @@ void BrowserWindow::SendAiMessage() {
     while (!input.empty() && std::isspace((unsigned char)input.back())) input.pop_back();
     if (input.empty()) return;
 
-    // Aktif ajanı belirle: önce dropdown seçimi, yoksa ilk ajan, yoksa eski prefs
+    // Aktif ajanı belirle: önce dropdown seçimi, dropdown'da seçim yoksa/geçersizse
+    // varsayılan ajan (DefaultAgent), o da yoksa eski prefs
     const auto& agents = AiAgentStore::Get().Agents();
     std::string active_api_key;
     std::string active_api_url;
@@ -4445,11 +4886,19 @@ void BrowserWindow::SendAiMessage() {
         // Dropdown'dan seçili indeksi al
         guint sel = ai_agent_combo_
             ? gtk_drop_down_get_selected(GTK_DROP_DOWN(ai_agent_combo_))
-            : 0;
-        if (sel == GTK_INVALID_LIST_POSITION || sel >= agents.size()) sel = 0;
-        active_api_key = agents[sel].api_key;
-        active_api_url = agents[sel].api_url;
-        active_model   = agents[sel].model;
+            : GTK_INVALID_LIST_POSITION;
+        const AiAgent* chosen = nullptr;
+        if (sel != GTK_INVALID_LIST_POSITION && sel < agents.size()) {
+            chosen = &agents[sel];
+        } else {
+            // Dropdown seçimi yok → varsayılan ajan
+            chosen = AiAgentStore::Get().DefaultAgent();
+        }
+        if (chosen) {
+            active_api_key = chosen->api_key;
+            active_api_url = chosen->api_url;
+            active_model   = chosen->model;
+        }
     } else {
         const auto& p = SettingsManager::Get().Prefs();
         active_api_key = p.ai_api_key;
@@ -4609,6 +5058,7 @@ void BrowserWindow::SendAiMessage() {
     DoSendAiMessage(input, provider, model, active_api_key, active_api_url);
 }
 
+void BrowserWindow::DoSendAiMessage(const std::string& input,
                                     const std::string& provider,
                                     const std::string& model,
                                     const std::string& api_key,
@@ -4689,15 +5139,50 @@ void BrowserWindow::SendAiMessage() {
     gtk_widget_set_visible(ai_attach_box_, FALSE);
     ShowAiLoading(true);
 
+    // Streaming bubble: önceden boş bir asistan balonu oluştur, chunk'lar buraya eklenir
+    GtkWidget* stream_bubble = gtk_label_new("");
+    gtk_label_set_wrap(GTK_LABEL(stream_bubble), TRUE);
+    gtk_label_set_wrap_mode(GTK_LABEL(stream_bubble), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_selectable(GTK_LABEL(stream_bubble), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(stream_bubble), 0.0f);
+    gtk_widget_add_css_class(stream_bubble, "ai-bubble-ai");
+    gtk_widget_set_halign(stream_bubble, GTK_ALIGN_FILL);
+    gtk_box_append(GTK_BOX(ai_chat_box_), stream_bubble);
+
+    // Birikmiş ham metin (markup öncesi)
+    auto* accumulated = new std::string();
+
     AiManager::Get().SendMessage(
         ai_current_chat_, provider, model, api_key, api_url,
-        [this](const std::string& content, bool /*done*/, const std::string& err) {
-            ShowAiLoading(false);
-            if (!err.empty())
-                AppendAiBubble("assistant", "⚠ Hata: " + err);
-            else if (!content.empty())
-                AppendAiBubble("assistant", content);
-            RefreshAiChatList();
+        [this, stream_bubble, accumulated](const std::string& content, bool done, const std::string& err) {
+            if (!err.empty()) {
+                ShowAiLoading(false);
+                gtk_label_set_text(GTK_LABEL(stream_bubble), ("\xe2\x9a\xa0 Hata: " + err).c_str());
+                delete accumulated;
+                RefreshAiChatList();
+                return;
+            }
+            if (!done) {
+                // Chunk geldi: birikmiş metne ekle, label'ı güncelle
+                *accumulated += content;
+                std::string markup = md_to_pango(*accumulated);
+                gtk_label_set_markup(GTK_LABEL(stream_bubble), markup.c_str());
+                // Scroll aşağı
+                if (ai_chat_scroll_) {
+                    GtkAdjustment* adj = gtk_scrolled_window_get_vadjustment(
+                        GTK_SCROLLED_WINDOW(ai_chat_scroll_));
+                    gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+                }
+            } else {
+                // Tamamlandı
+                ShowAiLoading(false);
+                if (!accumulated->empty()) {
+                    std::string markup = md_to_pango(*accumulated);
+                    gtk_label_set_markup(GTK_LABEL(stream_bubble), markup.c_str());
+                }
+                delete accumulated;
+                RefreshAiChatList();
+            }
         });
 }
 
@@ -5034,7 +5519,69 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
         title = "Gizlilik — ferman";
     } else if (uri == "ferman://ayarlar/yapay-zeka") {
         html  = BuildSettingsAiHTML();
-        title = "Yapay Zeka — ferman";
+        title = "Yapay Zeka \xe2\x80\x94 ferman";
+    } else if (uri == "ferman://ayarlar/favoriler") {
+        html  = BuildSettingsBookmarksHTML();
+        title = "Favoriler \xe2\x80\x94 ferman";
+    } else if (uri.rfind("ferman://favori-klasor-ekle", 0) == 0) {
+        // ferman://favori-klasor-ekle?path=<encoded>
+        auto ppos = uri.find("path=");
+        if (ppos != std::string::npos) {
+            std::string enc = uri.substr(ppos + 5);
+            std::string path;
+            for (size_t i = 0; i < enc.size(); ++i) {
+                if (enc[i] == '%' && i + 2 < enc.size()) {
+                    int v = 0; sscanf(enc.substr(i+1,2).c_str(), "%x", &v);
+                    path += (char)v; i += 2;
+                } else if (enc[i] == '+') path += ' ';
+                else path += enc[i];
+            }
+            if (!path.empty()) BookmarkManager::Get().AddFolder(path);
+        }
+        html  = BuildSettingsBookmarksHTML();
+        title = "Favoriler \xe2\x80\x94 ferman";
+    } else if (uri.rfind("ferman://favori-klasor-sil", 0) == 0) {
+        auto ppos = uri.find("path=");
+        if (ppos != std::string::npos) {
+            std::string enc = uri.substr(ppos + 5);
+            std::string path;
+            for (size_t i = 0; i < enc.size(); ++i) {
+                if (enc[i] == '%' && i + 2 < enc.size()) {
+                    int v = 0; sscanf(enc.substr(i+1,2).c_str(), "%x", &v);
+                    path += (char)v; i += 2;
+                } else if (enc[i] == '+') path += ' ';
+                else path += enc[i];
+            }
+            if (!path.empty()) BookmarkManager::Get().RemoveFolder(path);
+        }
+        RebuildBookmarksBar();
+        html  = BuildSettingsBookmarksHTML();
+        title = "Favoriler \xe2\x80\x94 ferman";
+    } else if (uri.rfind("ferman://favori-klasor-yeniden-adlandir", 0) == 0) {
+        auto decode_param = [&](const std::string& key) -> std::string {
+            std::string search = key + "=";
+            auto pos = uri.find(search);
+            if (pos == std::string::npos) return "";
+            pos += search.size();
+            auto end = uri.find('&', pos);
+            std::string enc = (end == std::string::npos) ? uri.substr(pos) : uri.substr(pos, end - pos);
+            std::string out;
+            for (size_t i = 0; i < enc.size(); ++i) {
+                if (enc[i] == '%' && i + 2 < enc.size()) {
+                    int v = 0; sscanf(enc.substr(i+1,2).c_str(), "%x", &v);
+                    out += (char)v; i += 2;
+                } else if (enc[i] == '+') out += ' ';
+                else out += enc[i];
+            }
+            return out;
+        };
+        std::string old_path = decode_param("path");
+        std::string new_name = decode_param("name");
+        if (!old_path.empty() && !new_name.empty())
+            BookmarkManager::Get().RenameFolder(old_path, new_name);
+        RebuildBookmarksBar();
+        html  = BuildSettingsBookmarksHTML();
+        title = "Favoriler \xe2\x80\x94 ferman";
     } else if (uri.rfind("ferman://ai-ajan-kaydet", 0) == 0) {
         auto decode = [&](const std::string& key) -> std::string {
             std::string search = key + "=";
@@ -5065,6 +5612,7 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
             if (existing) ag.api_key = existing->api_key;
         }
         AiAgentStore::Get().AddAgent(ag);
+        UpdateAiAgentCombo();
         webkit_web_view_load_uri(wv, "ferman://ayarlar/yapay-zeka");
         return;
     } else if (uri.rfind("ferman://ai-ajan-sil", 0) == 0) {
@@ -5079,6 +5627,23 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
                 } else { id += enc_id[i]; }
             }
             AiAgentStore::Get().RemoveAgent(id);
+            UpdateAiAgentCombo();
+        }
+        webkit_web_view_load_uri(wv, "ferman://ayarlar/yapay-zeka");
+        return;
+    } else if (uri.rfind("ferman://ai-ajan-varsayilan", 0) == 0) {
+        auto pos = uri.find("id=");
+        if (pos != std::string::npos) {
+            std::string enc_id = uri.substr(pos + 3);
+            std::string id;
+            for (size_t i = 0; i < enc_id.size(); ++i) {
+                if (enc_id[i] == '%' && i + 2 < enc_id.size()) {
+                    int v = 0; sscanf(enc_id.substr(i+1,2).c_str(), "%x", &v);
+                    id += (char)v; i += 2;
+                } else { id += enc_id[i]; }
+            }
+            AiAgentStore::Get().SetDefault(id);
+            UpdateAiAgentCombo();
         }
         webkit_web_view_load_uri(wv, "ferman://ayarlar/yapay-zeka");
         return;
@@ -5131,6 +5696,51 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
                 delete ctx;
             }, ctx);
         g_object_unref(fd);
+        return;
+    } else if (uri.rfind("ferman://pick-folder-btn", 0) == 0) {
+        // Klasör butonu hedef dizini seç
+        GtkFileDialog* fd2 = gtk_file_dialog_new();
+        gtk_file_dialog_set_title(fd2, "Klasör Butonu Dizinini Seç");
+        gtk_file_dialog_set_modal(fd2, TRUE);
+        auto cur_pos2 = uri.find("cur=");
+        if (cur_pos2 != std::string::npos) {
+            std::string enc = uri.substr(cur_pos2 + 4);
+            std::string dec;
+            for (size_t i = 0; i < enc.size(); ++i) {
+                if (enc[i] == '%' && i + 2 < enc.size()) {
+                    int v = 0; sscanf(enc.substr(i+1,2).c_str(), "%x", &v);
+                    dec += (char)v; i += 2;
+                } else if (enc[i] == '+') dec += ' ';
+                else dec += enc[i];
+            }
+            if (!dec.empty()) {
+                std::string path2 = (dec[0]=='~')
+                    ? std::string(g_get_home_dir()) + dec.substr(1) : dec;
+                GFile* f2 = g_file_new_for_path(path2.c_str());
+                gtk_file_dialog_set_initial_folder(fd2, f2);
+                g_object_unref(f2);
+            }
+        }
+        struct FdCtx2 { BrowserWindow* self; };
+        auto* ctx2 = new FdCtx2{this};
+        gtk_file_dialog_select_folder(fd2, GTK_WINDOW(window_), nullptr,
+            [](GObject* src, GAsyncResult* res, gpointer ud) {
+                auto* ctx = static_cast<FdCtx2*>(ud);
+                GFile* f = gtk_file_dialog_select_folder_finish(
+                    GTK_FILE_DIALOG(src), res, nullptr);
+                if (f) {
+                    char* path = g_file_get_path(f);
+                    if (path) {
+                        SettingsManager::Get().Prefs().folder_btn_path = path;
+                        SettingsManager::Get().Save();
+                        ctx->self->HandlefermanScheme("ferman://ayarlar");
+                        g_free(path);
+                    }
+                    g_object_unref(f);
+                }
+                delete ctx;
+            }, ctx2);
+        g_object_unref(fd2);
         return;
     } else if (uri == "ferman://gecmis") {
         html  = BuildHistoryHTML();
@@ -5225,10 +5835,12 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
         std::string js       = parse_param("js");
         std::string hw       = parse_param("hw");
         std::string se       = parse_param("se");
-        std::string dldir    = parse_param("dldir");
-        std::string histdays = parse_param("histdays");
-        std::string maxtabs  = parse_param("maxtabs");
-        std::string restore  = parse_param("restore");
+        std::string dldir     = parse_param("dldir");
+        std::string askdl     = parse_param("askdl");
+        std::string folderbtn = parse_param("folderbtn");
+        std::string histdays  = parse_param("histdays");
+        std::string maxtabs   = parse_param("maxtabs");
+        std::string restore   = parse_param("restore");
         std::string fontsize    = parse_param("fontsize");
         std::string minfont     = parse_param("minfont");
         std::string ai_provider = parse_param("ai_provider");
@@ -5241,6 +5853,8 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
         if (!hw.empty())          prefs.hardware_accel    = (hw == "1");
         if (!se.empty())          prefs.search_engine     = se;
         prefs.download_dir = dldir;
+        if (!askdl.empty())     prefs.ask_download_location = (askdl == "1");
+        prefs.folder_btn_path = folderbtn;
         if (!histdays.empty())    prefs.history_days      = std::stoi(histdays);
         if (!maxtabs.empty())     prefs.max_tabs          = std::stoi(maxtabs);
         if (!restore.empty())     prefs.restore_tabs      = (restore == "1");
@@ -5285,8 +5899,7 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
     UpdateTabLabel(active_tab_);
     // URL barını güncelle (programatik — focus yoksa changed sinyali popup açmaz)
     gtk_editable_set_text(GTK_EDITABLE(url_entry_), uri.c_str());
-    std::string wt = (title.empty() || title == kAppName) ? kAppName : (title + " — " + kAppName);
-    gtk_window_set_title(GTK_WINDOW(window_), wt.c_str());
+    // window title degistirilmiyor — her zaman sabit kAppName
 }
 
 // ── Static callback'ler (yeni) ───────────────────────────────────────────

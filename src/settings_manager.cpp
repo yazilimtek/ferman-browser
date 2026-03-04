@@ -4,6 +4,7 @@
 #include <string>
 #include <algorithm>
 #include <ctime>
+#include <cstdio>
 
 namespace ferman {
 
@@ -52,7 +53,9 @@ void SettingsManager::Load() {
     settings_.hardware_accel    = get_bool("General", "hardware_accel",    settings_.hardware_accel);
     settings_.language          = get_str ("General", "language",          settings_.language);
     settings_.search_engine     = get_str ("General", "search_engine",     settings_.search_engine);
-    settings_.download_dir       = get_str ("General", "download_dir",       settings_.download_dir);
+    settings_.download_dir           = get_str ("General", "download_dir",           settings_.download_dir);
+    settings_.ask_download_location   = get_bool("General", "ask_download_location", settings_.ask_download_location);
+    settings_.folder_btn_path         = get_str ("General", "folder_btn_path",         settings_.folder_btn_path);
     settings_.history_days       = (int)get_dbl("General", "history_days",  (double)settings_.history_days);
     settings_.max_tabs           = (int)get_dbl("General", "max_tabs",       (double)settings_.max_tabs);
     settings_.restore_tabs       = get_bool("General", "restore_tabs",      settings_.restore_tabs);
@@ -66,6 +69,28 @@ void SettingsManager::Load() {
     settings_.setup_skipped       = get_bool("Setup", "skipped",        settings_.setup_skipped);
     settings_.user_email          = get_str ("Setup", "user_email",     settings_.user_email);
     settings_.encrypted_api_key   = get_str ("Setup", "encrypted_api_key", settings_.encrypted_api_key);
+    settings_.device_id           = get_str ("Setup", "device_id",         settings_.device_id);
+
+    // device_id yoksa ilk çalıştırmada UUID benzeri benzersiz id üret
+    if (settings_.device_id.empty()) {
+        guint32 a = g_random_int();
+        guint32 b = g_random_int();
+        guint32 c = g_random_int();
+        guint32 d = g_random_int();
+        char buf[37];
+        snprintf(buf, sizeof(buf),
+            "%08x-%04x-%04x-%04x-%04x%08x",
+            a,
+            (b >> 16) & 0xffff,
+            (b & 0x0fff) | 0x4000,          // version 4
+            ((c >> 16) & 0x3fff) | 0x8000,  // variant
+            c & 0xffff, d);
+        settings_.device_id = buf;
+        // Hemen diske kaydet
+        g_key_file_free(kf);
+        Save();
+        return;
+    }
 
     g_key_file_free(kf);
 }
@@ -78,7 +103,9 @@ void SettingsManager::Save() {
     g_key_file_set_boolean(kf, "General", "hardware_accel",    settings_.hardware_accel);
     g_key_file_set_string (kf, "General", "language",          settings_.language.c_str());
     g_key_file_set_string (kf, "General", "search_engine",     settings_.search_engine.c_str());
-    g_key_file_set_string (kf, "General", "download_dir",       settings_.download_dir.c_str());
+    g_key_file_set_string (kf, "General", "download_dir",           settings_.download_dir.c_str());
+    g_key_file_set_boolean(kf, "General", "ask_download_location",   settings_.ask_download_location);
+    g_key_file_set_string (kf, "General", "folder_btn_path",         settings_.folder_btn_path.c_str());
     g_key_file_set_double (kf, "General", "history_days",       (double)settings_.history_days);
     g_key_file_set_double (kf, "General", "max_tabs",           (double)settings_.max_tabs);
     g_key_file_set_boolean(kf, "General", "restore_tabs",       settings_.restore_tabs);
@@ -92,6 +119,7 @@ void SettingsManager::Save() {
     g_key_file_set_boolean(kf, "Setup",   "skipped",             settings_.setup_skipped);
     g_key_file_set_string (kf, "Setup",   "user_email",          settings_.user_email.c_str());
     g_key_file_set_string (kf, "Setup",   "encrypted_api_key",   settings_.encrypted_api_key.c_str());
+    g_key_file_set_string (kf, "Setup",   "device_id",            settings_.device_id.c_str());
 
     GError* err = nullptr;
     if (!g_key_file_save_to_file(kf, filepath_.c_str(), &err)) {
@@ -123,6 +151,7 @@ void AiAgentStore::Init(const std::string& config_dir) {
     g_mkdir_with_parents(config_dir.c_str(), 0755);
     filepath_ = config_dir + "/ai_agents.ini";
     agents_.clear();
+    default_id_.clear();
     GKeyFile* kf = g_key_file_new();
     GError* err = nullptr;
     if (!g_key_file_load_from_file(kf, filepath_.c_str(), G_KEY_FILE_NONE, &err)) {
@@ -149,11 +178,18 @@ void AiAgentStore::Init(const std::string& config_dir) {
         agents_.push_back(a);
     }
     g_strfreev(groups);
+    // varsayilan ajan
+    {
+        char* v = g_key_file_get_string(kf, "meta", "default_id", nullptr);
+        if (v) { default_id_ = v; g_free(v); }
+    }
     g_key_file_free(kf);
 }
 
 void AiAgentStore::Save() {
     GKeyFile* kf = g_key_file_new();
+    if (!default_id_.empty())
+        g_key_file_set_string(kf, "meta", "default_id", default_id_.c_str());
     for (const auto& a : agents_) {
         std::string grp = "agent." + a.id;
         g_key_file_set_string(kf, grp.c_str(), "name",    a.name.c_str());
@@ -191,7 +227,21 @@ std::string AiAgentStore::AddAgent(const AiAgent& a) {
 void AiAgentStore::RemoveAgent(const std::string& id) {
     agents_.erase(std::remove_if(agents_.begin(), agents_.end(),
         [&](const AiAgent& a){ return a.id == id; }), agents_.end());
+    if (default_id_ == id) default_id_.clear();
     Save();
+}
+
+void AiAgentStore::SetDefault(const std::string& id) {
+    default_id_ = id;
+    Save();
+}
+
+AiAgent* AiAgentStore::DefaultAgent() {
+    if (!default_id_.empty()) {
+        auto* a = FindById(default_id_);
+        if (a) return a;
+    }
+    return agents_.empty() ? nullptr : &agents_[0];
 }
 
 } // namespace ferman

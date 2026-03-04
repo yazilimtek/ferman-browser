@@ -87,6 +87,7 @@ private:
     void  ShowAgentAutocomplete(const std::string& prefix);
     void  HideAgentAutocomplete();
     std::string BuildSettingsAiHTML();
+    std::string BuildSettingsBookmarksHTML();
 
     static void OnAiSendCb(GtkButton*, gpointer);
     static void OnAiNewChatCb(GtkButton*, gpointer);
@@ -135,6 +136,7 @@ private:
     GtkWidget* bookmarks_box_   = nullptr;
     GtkWidget* zoom_reset_btn_  = nullptr;
     bool       bookmarks_visible_ = false;
+    std::string saved_url_;   // clear butonundan önce kaydedilen URL (ESC ile geri gelir)
 
     // ── Sayfa İçi Arama (Сtrl+F) ──
     GtkWidget* find_bar_        = nullptr;  // GtkRevealer

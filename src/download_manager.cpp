@@ -257,12 +257,88 @@ gboolean DownloadManager::OnDecideDestinationCb(WebKitDownload* dl,
                                                  gpointer ud) {
     auto* item = static_cast<DownloadItem*>(ud);
 
+    // Dosya adını URL'den çıkar
+    std::string filename = suggested ? suggested : "download";
+    auto slash = filename.rfind('/');
+    if (slash != std::string::npos) filename = filename.substr(slash + 1);
+    if (filename.empty()) filename = "download";
+    item->filename = filename;
+    gtk_label_set_text(GTK_LABEL(item->label), filename.c_str());
+
+    if (SettingsManager::Get().Prefs().ask_download_location) {
+        // Konum sor — dialog açılırken indirme bekletilir (decide-destination sinyali engellenir)
+        // WebKit bu callback'ten TRUE döndürülmeden hedefi bekler.
+        // GtkFileDialog async — senkron gibi davranmak için GMainLoop kullan.
+        auto* dm_self = static_cast<DownloadManager*>(
+            g_object_get_data(G_OBJECT(dl), "dm-ptr"));
+
+        GtkFileDialog* fd = gtk_file_dialog_new();
+        gtk_file_dialog_set_title(fd, ("Kaydet: " + filename).c_str());
+        gtk_file_dialog_set_initial_name(fd, filename.c_str());
+
+        const std::string& cfg_dir = SettingsManager::Get().Prefs().download_dir;
+        std::string def_dir;
+        if (!cfg_dir.empty()) {
+            def_dir = (cfg_dir[0]=='~') ? std::string(g_get_home_dir()) + cfg_dir.substr(1) : cfg_dir;
+        } else {
+            const char* d = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+            def_dir = d ? d : g_get_home_dir();
+        }
+        GFile* init_folder = g_file_new_for_path(def_dir.c_str());
+        gtk_file_dialog_set_initial_folder(fd, init_folder);
+        g_object_unref(init_folder);
+
+        // Senkron bekleme: iç GMainLoop çalıştır, dialog kapanınca dur
+        struct SyncCtx {
+            GMainLoop*    loop;
+            std::string   chosen_path;
+            bool          cancelled;
+        };
+        SyncCtx sctx{g_main_loop_new(nullptr, FALSE), "", false};
+
+        GtkWindow* parent_win = dm_self ? dm_self->parent_ : nullptr;
+        gtk_file_dialog_save(fd, parent_win, nullptr,
+            [](GObject* src, GAsyncResult* res, gpointer ud) {
+                auto* sc = static_cast<SyncCtx*>(ud);
+                GError* err = nullptr;
+                GFile* file = gtk_file_dialog_save_finish(GTK_FILE_DIALOG(src), res, &err);
+                if (err || !file) {
+                    if (err) g_error_free(err);
+                    sc->cancelled = true;
+                } else {
+                    char* p = g_file_get_path(file);
+                    if (p) { sc->chosen_path = p; g_free(p); }
+                    g_object_unref(file);
+                }
+                g_main_loop_quit(sc->loop);
+            }, &sctx);
+        g_object_unref(fd);
+
+        g_main_loop_run(sctx.loop);
+        g_main_loop_unref(sctx.loop);
+
+        if (sctx.cancelled || sctx.chosen_path.empty()) {
+            // Kullanıcı iptal etti
+            gtk_label_set_text(GTK_LABEL(item->status), "\xc3\x97 \xc4\xb0ptal edildi");
+            item->done = true;
+            if (dm_self) gtk_widget_set_sensitive(dm_self->clear_btn_, TRUE);
+            webkit_download_cancel(dl);
+            return TRUE;
+        }
+
+        item->dest_path = sctx.chosen_path;
+        item->filename  = g_path_get_basename(sctx.chosen_path.c_str());
+        gtk_label_set_text(GTK_LABEL(item->label), item->filename.c_str());
+        webkit_download_set_destination(dl, item->dest_path.c_str());
+        webkit_download_set_allow_overwrite(dl, TRUE);
+        return TRUE;
+    }
+
+    // Konum sormadan dogrudan kaydet
     const std::string& cfg_dir = SettingsManager::Get().Prefs().download_dir;
     std::string dir;
     if (!cfg_dir.empty()) {
-        dir = (cfg_dir[0]=='~')
-            ? std::string(g_get_home_dir()) + cfg_dir.substr(1)
-            : cfg_dir;
+        dir = (cfg_dir[0]=='~') ? std::string(g_get_home_dir()) + cfg_dir.substr(1) : cfg_dir;
     } else {
         const char* d = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
         if (!d) d = g_get_home_dir();
@@ -270,19 +346,10 @@ gboolean DownloadManager::OnDecideDestinationCb(WebKitDownload* dl,
     }
     g_mkdir_with_parents(dir.c_str(), 0755);
 
-    std::string filename = suggested ? suggested : "download";
-    auto slash = filename.rfind('/');
-    if (slash != std::string::npos) filename = filename.substr(slash + 1);
-    if (filename.empty()) filename = "download";
-
-    item->filename  = filename;
     item->dest_path = dir + "/" + filename;
-
-    gtk_label_set_text(GTK_LABEL(item->label), filename.c_str());
-
     webkit_download_set_destination(dl, item->dest_path.c_str());
     webkit_download_set_allow_overwrite(dl, TRUE);
-    return TRUE;  // handled — indirme devam etsin
+    return TRUE;
 }
 
 void DownloadManager::OnProgressCb(WebKitDownload* dl, GParamSpec*, gpointer ud) {

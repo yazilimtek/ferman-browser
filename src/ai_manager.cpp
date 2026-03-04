@@ -1,4 +1,5 @@
 #include "ai_manager.h"
+#include "settings_manager.h"
 #include <gio/gio.h>
 #include <libsoup/soup.h>
 #include <ctime>
@@ -224,6 +225,7 @@ std::vector<AiChat> AiManager::ListChats(const AiChatFilter& filter) const {
 
 // API key önekinden provider otomatik belirle (AiAgent::DetectProvider ile aynı mantık)
 static std::string DetectProviderFromKey(const std::string& api_key) {
+    if (api_key.rfind("fai-",    0) == 0) return "ferman";
     if (api_key.rfind("sk-ant-", 0) == 0) return "anthropic";
     if (api_key.rfind("sk-or-",  0) == 0) return "openrouter";
     if (api_key.rfind("gsk_",    0) == 0) return "groq";
@@ -242,7 +244,12 @@ AiManager::ProviderCfg AiManager::BuildProviderCfg(
     std::string provider = api_key.empty() ? provider_hint : DetectProviderFromKey(api_key);
 
     ProviderCfg cfg;
-    if (provider == "anthropic") {
+    if (provider == "ferman") {
+        cfg.url = base_url.empty()
+            ? "https://ferman.net.tr/api/v1/chat/completions"
+            : base_url;
+        cfg.auth_header = "Bearer " + api_key;
+    } else if (provider == "anthropic") {
         cfg.url = base_url.empty()
             ? "https://api.anthropic.com/v1/messages"
             : base_url;
@@ -302,7 +309,7 @@ std::string AiManager::BuildRequestBody(const AiChat& chat,
     } else {
         // OpenAI / DeepSeek uyumlu format — system mesajları dahil
         o << "{\"model\":\"" << json_escape(model) << "\","
-          << "\"stream\":false,"
+          << "\"stream\":true,"
           << "\"messages\":[";
         bool first = true;
         for (const auto& m : chat.messages) {
@@ -340,13 +347,146 @@ std::string AiManager::ParseResponse(const std::string& body,
 
 // ── Async HTTP gönderme ───────────────────────────────────────────────────────
 
+// SSE chunk parser: "data: {...}\n" satırından delta content çıkar
+static std::string parse_sse_chunk(const std::string& line, const std::string& provider) {
+    // "data: " önekini atla
+    if (line.rfind("data: ", 0) != 0) return {};
+    std::string json = line.substr(6);
+    if (json == "[DONE]") return {};
+
+    if (provider == "anthropic") {
+        // {"type":"content_block_delta","delta":{"type":"text_delta","text":"..."}}
+        auto pos = json.find("\"text\":\"");
+        if (pos == std::string::npos) return {};
+        return json_str("{" + json.substr(pos - 1), "text");
+    } else {
+        // OpenAI/DeepSeek: choices[0].delta.content
+        auto pos = json.find("\"content\":\"");
+        if (pos == std::string::npos) return {};
+        return json_str("{" + json.substr(pos), "content");
+    }
+}
+
 struct SendCtx {
-    AiChat*           chat;
-    std::string       provider;
-    std::string       model;
+    AiChat*            chat;
+    std::string        provider;
+    std::string        model;
     AiResponseCallback callback;
-    AiManager*        mgr;
+    AiManager*         mgr;
+    GInputStream*      stream;
+    SoupSession*       session;
+    std::string        line_buf;   // biriken satır tamponu
+    std::string        full_text;  // toplanan tam yanıt
+    static const gsize kBufSize = 4096;
+    char               read_buf[4096];
 };
+
+// Forward declaration
+static void sse_read_next(SendCtx* ctx);
+
+static void sse_on_read(GObject* src, GAsyncResult* res, gpointer ud) {
+    auto* ctx = static_cast<SendCtx*>(ud);
+    GError* err = nullptr;
+    gssize n = g_input_stream_read_finish(G_INPUT_STREAM(src), res, &err);
+
+    if (err) {
+        std::string emsg = err->message;
+        g_error_free(err);
+        // Main thread'e hata ilet
+        struct ErrRet { SendCtx* ctx; std::string msg; };
+        auto* r = new ErrRet{ctx, emsg};
+        g_main_context_invoke(nullptr, [](gpointer ud) -> gboolean {
+            auto* r = static_cast<ErrRet*>(ud);
+            r->ctx->callback("", true, r->msg);
+            g_object_unref(r->ctx->stream);
+            g_object_unref(r->ctx->session);
+            delete r->ctx;
+            delete r;
+            return G_SOURCE_REMOVE;
+        }, r);
+        return;
+    }
+
+    if (n <= 0) {
+        // Stream bitti — kalan tamponu işle
+        if (!ctx->line_buf.empty()) {
+            std::string chunk = parse_sse_chunk(ctx->line_buf, ctx->provider);
+            if (!chunk.empty()) ctx->full_text += chunk;
+            ctx->line_buf.clear();
+        }
+        // Asistan mesajını chat'e kaydet ve done callback
+        struct DoneRet { SendCtx* ctx; };
+        auto* r = new DoneRet{ctx};
+        g_main_context_invoke(nullptr, [](gpointer ud) -> gboolean {
+            auto* r = static_cast<DoneRet*>(ud);
+            auto* ctx = r->ctx;
+            AiMessage am;
+            am.role      = "assistant";
+            am.content   = ctx->full_text;
+            am.timestamp = (int64_t)std::time(nullptr);
+            ctx->chat->messages.push_back(am);
+            if (ctx->chat->title == "Yeni Sohbet") {
+                for (const auto& m : ctx->chat->messages) {
+                    if (m.role == "user") {
+                        ctx->chat->title = m.content.substr(0, 40);
+                        if (m.content.size() > 40) ctx->chat->title += "\xe2\x80\xa6";
+                        break;
+                    }
+                }
+            }
+            ctx->mgr->SaveChat(*ctx->chat);
+            ctx->callback(ctx->full_text, true, "");
+            g_object_unref(ctx->stream);
+            g_object_unref(ctx->session);
+            delete ctx;
+            delete r;
+            return G_SOURCE_REMOVE;
+        }, r);
+        return;
+    }
+
+    // Gelen byte'ları satır tamponu'na ekle ve '\n'lerde kes
+    for (gssize i = 0; i < n; ++i) {
+        char c = ctx->read_buf[i];
+        if (c == '\n') {
+            std::string line = ctx->line_buf;
+            ctx->line_buf.clear();
+            if (line.empty() || line == "\r") continue;
+            // '\r' varsa sil
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+
+            std::string chunk = parse_sse_chunk(line, ctx->provider);
+            if (!chunk.empty()) {
+                ctx->full_text += chunk;
+                // Main thread'e chunk ilet (harf harf güncelleme)
+                struct ChunkRet { SendCtx* ctx; std::string chunk; };
+                auto* cr = new ChunkRet{ctx, chunk};
+                g_main_context_invoke(nullptr, [](gpointer ud) -> gboolean {
+                    auto* cr = static_cast<ChunkRet*>(ud);
+                    cr->ctx->callback(cr->chunk, false, "");
+                    delete cr;
+                    return G_SOURCE_REMOVE;
+                }, cr);
+            }
+        } else {
+            ctx->line_buf += c;
+        }
+    }
+
+    // Devam et — bir sonraki chunk'ı oku
+    sse_read_next(ctx);
+}
+
+static void sse_read_next(SendCtx* ctx) {
+    g_input_stream_read_async(
+        ctx->stream,
+        ctx->read_buf,
+        SendCtx::kBufSize,
+        G_PRIORITY_DEFAULT,
+        nullptr,
+        sse_on_read,
+        ctx);
+}
 
 void AiManager::SendMessage(AiChat& chat,
                              const std::string& provider,
@@ -358,7 +498,6 @@ void AiManager::SendMessage(AiChat& chat,
     auto cfg  = BuildProviderCfg(provider, model, api_key, base_url);
     auto body = BuildRequestBody(chat, provider, model);
 
-    // Libsoup session (her çağrıda yeni — thread-safe değil, main thread'de çağrılmalı)
     SoupSession* session = soup_session_new();
     SoupMessage* msg = soup_message_new("POST", cfg.url.c_str());
     if (!msg) {
@@ -367,23 +506,34 @@ void AiManager::SendMessage(AiChat& chat,
         return;
     }
 
-    // Headers
     SoupMessageHeaders* hdrs = soup_message_get_request_headers(msg);
     soup_message_headers_append(hdrs, "Content-Type", "application/json");
     if (!cfg.auth_header.empty())
         soup_message_headers_append(hdrs, "Authorization", cfg.auth_header.c_str());
     if (!cfg.extra_header.empty())
         soup_message_headers_append(hdrs, "x-api-key", cfg.extra_header.c_str());
-    if (provider == "anthropic")
+    if (provider == "anthropic") {
         soup_message_headers_append(hdrs, "anthropic-version", "2023-06-01");
+        soup_message_headers_append(hdrs, "accept", "text/event-stream");
+    }
+    // ferman.net.tr: device_id'yi X-Device-ID header olarak gönder
+    if (provider == "ferman") {
+        const std::string& dev_id = SettingsManager::Get().Prefs().device_id;
+        if (!dev_id.empty())
+            soup_message_headers_append(hdrs, "X-Device-ID", dev_id.c_str());
+    }
 
-    // Body
     GBytes* gbody = g_bytes_new(body.c_str(), body.size());
     soup_message_set_request_body_from_bytes(msg, "application/json", gbody);
     g_bytes_unref(gbody);
 
-    // Context için heap alloc
-    auto* ctx = new SendCtx{&chat, provider, model, callback, this};
+    auto* ctx = new SendCtx{};
+    ctx->chat     = &chat;
+    ctx->provider = provider;
+    ctx->model    = model;
+    ctx->callback = callback;
+    ctx->mgr      = this;
+    ctx->session  = session;
 
     soup_session_send_async(session, msg, G_PRIORITY_DEFAULT, nullptr,
         [](GObject* src, GAsyncResult* res, gpointer ud) {
@@ -393,85 +543,25 @@ void AiManager::SendMessage(AiChat& chat,
             GInputStream* stream = soup_session_send_finish(session, res, &err);
 
             if (err || !stream) {
-                std::string emsg = err ? err->message : "Bağlantı hatası";
+                std::string emsg = err ? std::string(err->message) : "Bağlantı hatası";
                 if (err) g_error_free(err);
+                if (stream) g_object_unref(stream);
+                struct ErrRet { SendCtx* ctx; std::string msg; };
+                auto* r = new ErrRet{ctx, emsg};
                 g_main_context_invoke(nullptr, [](gpointer ud) -> gboolean {
-                    auto* c = static_cast<SendCtx*>(ud);
-                    c->callback("", true, "HTTP hatası");
-                    delete c;
+                    auto* r = static_cast<ErrRet*>(ud);
+                    r->ctx->callback("", true, r->msg);
+                    g_object_unref(r->ctx->session);
+                    delete r->ctx;
+                    delete r;
                     return G_SOURCE_REMOVE;
-                }, ctx);
-                g_object_unref(session);
+                }, r);
                 return;
             }
 
-            // Body'yi oku
-            GOutputStream* mem = g_memory_output_stream_new_resizable();
-            g_output_stream_splice_async(mem, stream,
-                GOutputStreamSpliceFlags(G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE |
-                                         G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET),
-                G_PRIORITY_DEFAULT, nullptr,
-                [](GObject* src2, GAsyncResult* res2, gpointer ud2) {
-                    auto* ctx2  = static_cast<SendCtx*>(ud2);
-                    auto* mem2  = G_MEMORY_OUTPUT_STREAM(src2);
-                    GError* e2  = nullptr;
-                    g_output_stream_splice_finish(G_OUTPUT_STREAM(mem2), res2, &e2);
-                    if (e2) { g_error_free(e2); }
-
-                    gsize sz = g_memory_output_stream_get_data_size(mem2);
-                    const char* data = static_cast<const char*>(
-                        g_memory_output_stream_get_data(mem2));
-                    std::string resp_body(data, sz);
-                    g_object_unref(mem2);
-
-                    // Parse ve callback
-                    std::string content = ctx2->mgr->ParseResponse(resp_body, ctx2->provider);
-                    std::string err_msg;
-                    if (content.empty()) {
-                        // Hata mesajını bul
-                        auto ep = resp_body.find("\"message\":\"");
-                        if (ep != std::string::npos)
-                            err_msg = resp_body.substr(ep + 11, resp_body.find('"', ep + 11) - ep - 11);
-                        else
-                            err_msg = resp_body.substr(0, 200);
-                    }
-
-                    // Main thread'e taşı
-                    struct Ret { SendCtx* ctx; std::string content; std::string err; };
-                    auto* ret = new Ret{ctx2, content, err_msg};
-                    g_main_context_invoke(nullptr, [](gpointer ud3) -> gboolean {
-                        auto* r = static_cast<Ret*>(ud3);
-                        if (!r->err.empty()) {
-                            r->ctx->callback("", true, r->err);
-                        } else {
-                            // Asistan mesajını chat'e ekle
-                            AiMessage am;
-                            am.role      = "assistant";
-                            am.content   = r->content;
-                            am.timestamp = (int64_t)std::time(nullptr);
-                            r->ctx->chat->messages.push_back(am);
-                            // Başlık ilk kullanıcı mesajından (max 40 karakter)
-                            if (r->ctx->chat->title == "Yeni Sohbet") {
-                                for (const auto& m : r->ctx->chat->messages) {
-                                    if (m.role == "user") {
-                                        r->ctx->chat->title = m.content.substr(0, 40);
-                                        if (m.content.size() > 40)
-                                            r->ctx->chat->title += "…";
-                                        break;
-                                    }
-                                }
-                            }
-                            r->ctx->mgr->SaveChat(*r->ctx->chat);
-                            r->ctx->callback(r->content, true, "");
-                        }
-                        delete r->ctx;
-                        delete r;
-                        return G_SOURCE_REMOVE;
-                    }, ret);
-                }, ctx);
-
-            g_object_unref(stream);
-            g_object_unref(session);
+            ctx->stream = stream;
+            // SSE okumaya başla
+            sse_read_next(ctx);
         }, ctx);
 }
 
