@@ -137,6 +137,9 @@ private:
     GtkWidget* zoom_reset_btn_  = nullptr;
     bool       bookmarks_visible_ = false;
     std::string saved_url_;   // clear butonundan önce kaydedilen URL (ESC ile geri gelir)
+    bool is_dragging_ = false; // sekme sürükle-bırak sırasında close_btn'i engelle
+    std::vector<size_t> ai_agent_combo_order_; // combo sırası → agents indeksi eşlemesi
+    std::vector<std::string> closed_tabs_;     // Ctrl+Shift+T ile geri açmak için kapatılan URL'ler
 
     // ── Sayfa İçi Arama (Сtrl+F) ──
     GtkWidget* find_bar_        = nullptr;  // GtkRevealer

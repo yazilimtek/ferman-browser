@@ -2,7 +2,7 @@
 
 Ferman Browser, GTK4 ve WebKitGTK kullanılarak C++20 ile yazılmış hafif, hızlı ve açık kaynaklı bir web tarayıcısıdır.
 
-![Platform](https://img.shields.io/badge/platform-Linux-blue)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-blue)
 ![Language](https://img.shields.io/badge/language-C%2B%2B20-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Build](https://img.shields.io/github/actions/workflow/status/pardusus/ferman-browser/build.yml?branch=main)
@@ -30,6 +30,121 @@ Ferman Browser, GTK4 ve WebKitGTK kullanılarak C++20 ile yazılmış hafif, hı
 | GTK4 | 4.0 |
 | WebKitGTK | 6.0 (webkitgtk-6.0) |
 | pkg-config | — |
+
+---
+
+## Windows Kurulumu (MSYS2 / MinGW-w64)
+
+Ferman Browser, Windows 10/11 üzerinde **MSYS2** ortamı aracılığıyla derlenip çalıştırılabilir.  
+MSYS2, Windows'ta GTK4 ve WebKitGTK dahil tüm bağımlılıkları sağlayan Unix benzeri bir geliştirme ortamıdır.
+
+### 1. MSYS2 Kurulumu
+
+1. [https://www.msys2.org](https://www.msys2.org) adresinden **MSYS2** yükleyicisini indirin ve kurun.
+2. Kurulum tamamlandıktan sonra **MSYS2 UCRT64** terminalini açın (Başlat menüsünden).
+3. Sistemi güncelleyin:
+
+```bash
+pacman -Syu
+```
+
+> Terminal kapanırsa tekrar açıp güncellemeyi tamamlayın:
+
+```bash
+pacman -Su
+```
+
+### 2. Bağımlılıkları Yükleme
+
+**MSYS2 UCRT64** terminalinde aşağıdaki komutu çalıştırın:
+
+```bash
+pacman -S --needed \
+    mingw-w64-ucrt-x86_64-gcc \
+    mingw-w64-ucrt-x86_64-cmake \
+    mingw-w64-ucrt-x86_64-ninja \
+    mingw-w64-ucrt-x86_64-pkg-config \
+    mingw-w64-ucrt-x86_64-gtk4 \
+    mingw-w64-ucrt-x86_64-webkitgtk-6.0 \
+    mingw-w64-ucrt-x86_64-sqlite3 \
+    mingw-w64-ucrt-x86_64-libsoup3 \
+    mingw-w64-ucrt-x86_64-poppler \
+    mingw-w64-ucrt-x86_64-libzip \
+    git
+```
+
+> **Not:** `webkitgtk-6.0` paketi büyük olup indirilmesi biraz zaman alabilir (~500 MB).
+
+### 3. Kaynak Kodu İndirme
+
+```bash
+git clone https://github.com/yazilimtek/ferman-browser.git
+cd ferman-browser
+```
+
+### 4. Derleme
+
+```bash
+cmake -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=gcc \
+    -DCMAKE_CXX_COMPILER=g++
+
+cmake --build build -j$(nproc)
+```
+
+### 5. Çalıştırma
+
+```bash
+./build/ferman-browser.exe
+```
+
+Ya da Windows Explorer'dan `build/ferman-browser.exe` dosyasını çift tıklayarak açabilirsiniz.
+
+> **DLL Uyarısı:** İlk çalıştırmada eksik DLL hatası alırsanız, `ferman-browser.exe` dosyasının yanına gerekli DLL'leri kopyalamanız gerekir:
+
+```bash
+# Gerekli DLL'leri exe'nin yanına kopyala
+ldd build/ferman-browser.exe | grep ucrt64 | awk '{print $3}' | xargs -I{} cp {} build/
+```
+
+### 6. Dağıtım Paketi Oluşturma (İsteğe Bağlı)
+
+Taşınabilir bir klasör oluşturmak için tüm bağımlılıkları tek klasöre toplayabilirsiniz:
+
+```bash
+mkdir -p dist
+cp build/ferman-browser.exe dist/
+
+# Tüm bağımlı DLL'leri kopyala
+ldd build/ferman-browser.exe \
+    | grep '/ucrt64/' \
+    | awk '{print $3}' \
+    | xargs -I{} cp {} dist/
+
+# GLib şema dosyaları (GTK için gerekli)
+cp -r /ucrt64/share/glib-2.0/schemas dist/share/glib-2.0/
+glib-compile-schemas dist/share/glib-2.0/schemas/
+
+# GTK teması ve ikonlar
+mkdir -p dist/share/icons
+cp -r /ucrt64/share/icons/hicolor dist/share/icons/
+```
+
+> `dist/` klasörünü ZIP'leyerek GTK4 kurulu olmayan Windows bilgisayarlara taşıyabilirsiniz.
+
+### Windows'a Özgü Notlar
+
+| Konu | Açıklama |
+|---|---|
+| **Terminal** | Her zaman **MSYS2 UCRT64** terminalini kullanın (MINGW64 veya MSYS değil) |
+| **Yol ayraçları** | CMake komutlarında `/` kullanın, `\` değil |
+| **Antivirus** | Derleme sırasında bazı antivirüs yazılımları yavaşlatabilir; `build/` klasörünü istisna listesine ekleyin |
+| **WebKit süreci** | WebKitGTK, Windows'ta ayrı bir `WebKitNetworkProcess.exe` süreci başlatır — bu normaldir |
+| **Veri dizini** | Ayarlar ve yer imleri `%APPDATA%\ferman-browser\` altında saklanır |
+| **Poppler/LibZip** | PDF ve DOCX desteği için `poppler` ve `libzip` paketlerini kurun (yukarıda dahil edildi) |
+
+---
 
 ### Debian / Ubuntu / Pardus
 

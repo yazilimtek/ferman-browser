@@ -213,7 +213,7 @@ void DownloadManager::OnDownloadStarted(WebKitDownload* download) {
     item->open_btn = gtk_button_new_from_icon_name("document-open-symbolic");
     gtk_widget_add_css_class(item->open_btn, "flat");
     gtk_widget_add_css_class(item->open_btn, "circular");
-    gtk_widget_set_tooltip_text(item->open_btn, "Dosyayı aç");
+    gtk_widget_set_tooltip_text(item->open_btn, "Klas\xc3\xb6r\xc3\xbc a\xc3\xa7");
     gtk_widget_set_valign(item->open_btn, GTK_ALIGN_CENTER);
     gtk_widget_set_visible(item->open_btn, FALSE);
     g_object_set_data(G_OBJECT(item->open_btn), "item-ptr", item);
@@ -221,7 +221,12 @@ void DownloadManager::OnDownloadStarted(WebKitDownload* download) {
         G_CALLBACK(+[](GtkButton* btn, gpointer) {
             auto* it = static_cast<DownloadItem*>(g_object_get_data(G_OBJECT(btn), "item-ptr"));
             if (!it || it->dest_path.empty()) return;
-            std::string uri = "file://" + it->dest_path;
+            // Dosyanın bulunduğu klasörü aç (dosyayı değil)
+            std::string dir = it->dest_path;
+            auto slash = dir.rfind('/');
+            if (slash != std::string::npos) dir = dir.substr(0, slash);
+            if (dir.empty()) dir = "/";
+            std::string uri = "file://" + dir;
             g_app_info_launch_default_for_uri(uri.c_str(), nullptr, nullptr);
         }), nullptr);
     gtk_box_append(GTK_BOX(top), item->open_btn);
@@ -247,9 +252,16 @@ void DownloadManager::OnDownloadStarted(WebKitDownload* download) {
     g_signal_connect(download, "finished", G_CALLBACK(OnFinishedCb), fin_ctx);
     g_signal_connect(download, "failed",   G_CALLBACK(OnFailedCb),   fail_ctx);
 
-    // Paneli otomatik aç & vurgula
-    gtk_menu_button_popup(GTK_MENU_BUTTON(panel_btn_));
+    // Paneli otomatik aç & vurgula — idle'da çağır (sinyal handler re-entrancy önlemi)
     gtk_widget_add_css_class(panel_btn_, "suggested-action");
+    struct PopCtx { DownloadManager* dm; };
+    auto* pctx = new PopCtx{this};
+    g_idle_add([](gpointer ud) -> gboolean {
+        auto* pc = static_cast<PopCtx*>(ud);
+        gtk_menu_button_popup(GTK_MENU_BUTTON(pc->dm->panel_btn_));
+        delete pc;
+        return G_SOURCE_REMOVE;
+    }, pctx);
 }
 
 gboolean DownloadManager::OnDecideDestinationCb(WebKitDownload* dl,

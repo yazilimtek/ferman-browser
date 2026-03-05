@@ -29,6 +29,25 @@ static std::string json_escape(const std::string& s) {
 }
 
 // Basit değer çıkarıcı: "key":"value" → value
+// \uXXXX → UTF-8 dönüşümü
+static void append_utf8(std::string& out, uint32_t cp) {
+    if (cp < 0x80) {
+        out += (char)cp;
+    } else if (cp < 0x800) {
+        out += (char)(0xC0 | (cp >> 6));
+        out += (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out += (char)(0xE0 | (cp >> 12));
+        out += (char)(0x80 | ((cp >> 6) & 0x3F));
+        out += (char)(0x80 | (cp & 0x3F));
+    } else {
+        out += (char)(0xF0 | (cp >> 18));
+        out += (char)(0x80 | ((cp >> 12) & 0x3F));
+        out += (char)(0x80 | ((cp >> 6) & 0x3F));
+        out += (char)(0x80 | (cp & 0x3F));
+    }
+}
+
 static std::string json_str(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\":\"";
     auto pos = json.find(needle);
@@ -45,7 +64,26 @@ static std::string json_str(const std::string& json, const std::string& key) {
             else if (nc == '"')  result += '"';
             else if (nc == '\\') result += '\\';
             else if (nc == '/')  result += '/';
-            else                 result += nc;
+            else if (nc == 'u' && pos + 4 < json.size()) {
+                // \uXXXX — 4 hex basamağı oku
+                char hex[5] = {};
+                for (int k = 0; k < 4; ++k) hex[k] = json[++pos];
+                uint32_t cp = (uint32_t)strtoul(hex, nullptr, 16);
+                // Surrogate pair kontrolü: \uD800-\uDBFF → high surrogate
+                if (cp >= 0xD800 && cp <= 0xDBFF &&
+                    pos + 2 < json.size() &&
+                    json[pos+1] == '\\' && json[pos+2] == 'u') {
+                    pos += 2; // \u
+                    char hex2[5] = {};
+                    for (int k = 0; k < 4; ++k) hex2[k] = json[++pos];
+                    uint32_t low = (uint32_t)strtoul(hex2, nullptr, 16);
+                    if (low >= 0xDC00 && low <= 0xDFFF)
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                }
+                append_utf8(result, cp);
+            } else {
+                result += nc;
+            }
         } else if (c == '"') {
             break;
         } else {

@@ -9,9 +9,22 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ── Platform tespiti ───────────────────────────────────────────────────────────
+if(WIN32)
+    # MSYS2/MinGW-w64 ortamında pkg-config PATH'de olmalı
+    # WebKitGTK Windows için webkitgtk-6.0 yerine webkit2gtk-6.0 adını kullanır
+    message(STATUS "Building for Windows (MSYS2/MinGW-w64)")
+    set(WEBKIT_PKG "webkitgtk-6.0")
+    # Windows'ta konsol penceresi açılmasın (GUI uygulaması)
+    set(WIN32_SUBSYSTEM WIN32)
+else()
+    set(WEBKIT_PKG "webkitgtk-6.0")
+    set(WIN32_SUBSYSTEM "")
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK4    REQUIRED gtk4)
-pkg_check_modules(WEBKIT  REQUIRED webkitgtk-6.0)
+pkg_check_modules(WEBKIT  REQUIRED ${WEBKIT_PKG})
 pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 pkg_check_modules(SOUP    REQUIRED libsoup-3.0)
 pkg_check_modules(POPPLER         poppler-glib)
@@ -31,7 +44,12 @@ set(SOURCES
     src/setup_manager.cpp
 )
 
-add_executable(ferman-browser ${SOURCES})
+# Windows'ta GUI subsystem (konsol penceresi açılmaz), Linux'ta normal executable
+if(WIN32)
+    add_executable(ferman-browser WIN32 ${SOURCES})
+else()
+    add_executable(ferman-browser ${SOURCES})
+endif()
 set_target_properties(ferman-browser PROPERTIES OUTPUT_NAME "ferman-browser")
 
 # poppler/libzip opsiyonel — kuruluysa etkinleştir
