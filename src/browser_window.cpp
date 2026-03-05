@@ -799,7 +799,6 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     webkit_settings_set_enable_webgl(wk_settings, TRUE);
     webkit_settings_set_enable_webaudio(wk_settings, TRUE);
     webkit_settings_set_enable_page_cache(wk_settings, TRUE);
-    webkit_settings_set_enable_dns_prefetching(wk_settings, TRUE);
     webkit_settings_set_hardware_acceleration_policy(wk_settings,
         prefs.hardware_accel
             ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
@@ -1917,7 +1916,6 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
     webkit_settings_set_enable_webgl(wk_settings, TRUE);
     webkit_settings_set_enable_webaudio(wk_settings, TRUE);
     webkit_settings_set_enable_page_cache(wk_settings, TRUE);
-    webkit_settings_set_enable_dns_prefetching(wk_settings, TRUE);
     webkit_settings_set_hardware_acceleration_policy(
         wk_settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
 
@@ -3370,7 +3368,7 @@ std::string BrowserWindow::BuildSettingsBookmarksHTML() {
         int depth = 0;
         for (char c : f.name) if (c == '/') ++depth;
         if (depth >= 3) continue;  // max 4 seviye
-        std::string indent(depth * 2, '\xc2\xa0');
+        std::string indent(depth * 2, ' ');
         html += "<option value=\"" + he(f.name) + "\">" + indent + "\xf0\x9f\x93\x81 " + he(f.label) + "</option>";
     }
     html += "</select>"
@@ -4590,14 +4588,10 @@ void BrowserWindow::ShowAiQuickPopup(const std::string& title,
 
     if (api_key.empty()) {
         // Ajan yoksa popup ile uyar
-        GtkWidget* dlg = gtk_message_dialog_new(
-            GTK_WINDOW(window_), GTK_DIALOG_MODAL,
-            GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
+        GtkAlertDialog* dlg = gtk_alert_dialog_new("%s",
             "AI özelliği için önce Ayarlar > Yapay Zeka bölümünden bir ajan ekleyin.");
-        g_signal_connect(dlg, "response",
-            G_CALLBACK(+[](GtkDialog* d, int, gpointer){ gtk_window_destroy(GTK_WINDOW(d)); }),
-            nullptr);
-        gtk_window_present(GTK_WINDOW(dlg));
+        gtk_alert_dialog_show(dlg, GTK_WINDOW(window_));
+        g_object_unref(dlg);
         return;
     }
 
@@ -5238,6 +5232,12 @@ void BrowserWindow::DoSendAiMessage(const std::string& input,
     gtk_widget_add_css_class(stream_bubble, "ai-bubble-ai");
     gtk_widget_set_halign(stream_bubble, GTK_ALIGN_FILL);
     gtk_box_append(GTK_BOX(ai_chat_box_), stream_bubble);
+    g_idle_add([](gpointer ud) -> gboolean {
+        auto* scroll = GTK_SCROLLED_WINDOW(ud);
+        GtkAdjustment* adj = gtk_scrolled_window_get_vadjustment(scroll);
+        gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+        return G_SOURCE_REMOVE;
+    }, ai_chat_scroll_);
 
     // Birikmiş ham metin (markup öncesi)
     auto* accumulated = new std::string();
@@ -5257,11 +5257,15 @@ void BrowserWindow::DoSendAiMessage(const std::string& input,
                 *accumulated += content;
                 std::string markup = md_to_pango(*accumulated);
                 gtk_label_set_markup(GTK_LABEL(stream_bubble), markup.c_str());
-                // Scroll aşağı
+                // Scroll aşağı (layout sonrası)
                 if (ai_chat_scroll_) {
-                    GtkAdjustment* adj = gtk_scrolled_window_get_vadjustment(
-                        GTK_SCROLLED_WINDOW(ai_chat_scroll_));
-                    gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+                    GtkWidget* scroll_widget = ai_chat_scroll_;
+                    g_idle_add([](gpointer ud) -> gboolean {
+                        auto* scroll = GTK_SCROLLED_WINDOW(ud);
+                        GtkAdjustment* adj = gtk_scrolled_window_get_vadjustment(scroll);
+                        gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+                        return G_SOURCE_REMOVE;
+                    }, scroll_widget);
                 }
             } else {
                 // Tamamlandı

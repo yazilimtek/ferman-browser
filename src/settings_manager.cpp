@@ -71,7 +71,7 @@ void SettingsManager::Load() {
     settings_.encrypted_api_key   = get_str ("Setup", "encrypted_api_key", settings_.encrypted_api_key);
     settings_.device_id           = get_str ("Setup", "device_id",         settings_.device_id);
 
-    // device_id yoksa ilk çalıştırmada UUID benzeri benzersiz id üret
+    // device_id yoksa ilk çalıştırmada UUID v4 formatında benzersiz id üret
     if (settings_.device_id.empty()) {
         guint32 a = g_random_int();
         guint32 b = g_random_int();
@@ -82,8 +82,8 @@ void SettingsManager::Load() {
             "%08x-%04x-%04x-%04x-%04x%08x",
             a,
             (b >> 16) & 0xffff,
-            (b & 0x0fff) | 0x4000,          // version 4
-            ((c >> 16) & 0x3fff) | 0x8000,  // variant
+            (b & 0x0fff) | 0x4000,
+            ((c >> 16) & 0x3fff) | 0x8000,
             c & 0xffff, d);
         settings_.device_id = buf;
         // Hemen diske kaydet

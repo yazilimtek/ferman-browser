@@ -554,11 +554,11 @@ void AiManager::SendMessage(AiChat& chat,
         soup_message_headers_append(hdrs, "anthropic-version", "2023-06-01");
         soup_message_headers_append(hdrs, "accept", "text/event-stream");
     }
-    // ferman.net.tr: device_id'yi X-Device-ID header olarak gönder
-    if (provider == "ferman") {
+    // Tüm provider'lara tarayıcı kimliğini gönder
+    {
         const std::string& dev_id = SettingsManager::Get().Prefs().device_id;
         if (!dev_id.empty())
-            soup_message_headers_append(hdrs, "X-Device-ID", dev_id.c_str());
+            soup_message_headers_append(hdrs, "X-Browser-ID", dev_id.c_str());
     }
 
     GBytes* gbody = g_bytes_new(body.c_str(), body.size());
