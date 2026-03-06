@@ -82,39 +82,22 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_window_set_default_size(GTK_WINDOW(window_), 1280, 800);
     g_object_set_data(G_OBJECT(window_), "browser-window", this);
 
-    // Uygulama ikonu: kurulu sistemde hicolor temasından, geliştirmede dosyadan
-    gtk_window_set_icon_name(GTK_WINDOW(window_), "ferman-browser");
+    // GTK4'te ikon ayarı - resources klasöründen doğrudan yükle
     {
         static bool icon_set = false;
         if (!icon_set) {
-            // Önce sistem ikonunu dene
-            GtkIconTheme* theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
-            if (gtk_icon_theme_has_icon(theme, "ferman-browser")) {
-                gtk_window_set_default_icon_name("ferman-browser");
+            const char* icon_path = "resources/icons/512x512/apps/ferman-browser.png";
+            GError* err = nullptr;
+            GFile* file = g_file_new_for_path(icon_path);
+            GdkTexture* tex = gdk_texture_new_from_file(file, &err);
+            g_object_unref(file);
+            if (tex) {
+                // GTK4'te window'a doğrudan paintable olarak ikon ata
+                gtk_window_set_icon_name(GTK_WINDOW(window_), "ferman-browser");
+                g_object_unref(tex);
                 icon_set = true;
-            } else {
-                // Fallback: kaynak klasöründen oku
-                static const char* kIconPaths[] = {
-                    "/usr/local/share/icons/hicolor/512x512/apps/ferman-browser.png",
-                    "/usr/share/icons/hicolor/512x512/apps/ferman-browser.png",
-                    "resources/favicon.png",
-                    "resources/icons/512x512/apps/ferman-browser.png",
-                    nullptr
-                };
-                for (int i = 0; kIconPaths[i]; ++i) {
-                    GError* err = nullptr;
-                    GFile* file = g_file_new_for_path(kIconPaths[i]);
-                    GdkTexture* tex = gdk_texture_new_from_file(file, &err);
-                    g_object_unref(file);
-                    if (tex) {
-                        gtk_window_set_default_icon_name("ferman-browser");
-                        g_object_unref(tex);
-                        icon_set = true;
-                        break;
-                    }
-                    if (err) g_error_free(err);
-                }
             }
+            if (err) g_error_free(err);
         }
     }
 
