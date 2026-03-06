@@ -82,22 +82,29 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     gtk_window_set_default_size(GTK_WINDOW(window_), 1280, 800);
     g_object_set_data(G_OBJECT(window_), "browser-window", this);
 
-    // GTK4'te ikon ayarı - resources klasöründen doğrudan yükle
+    // Uygulama ikonu: kurulu sistemde hicolor temasından, geliştirmede dosyadan
+    gtk_window_set_icon_name(GTK_WINDOW(window_), "ferman-browser");
     {
         static bool icon_set = false;
         if (!icon_set) {
-            const char* icon_path = "resources/icons/512x512/apps/ferman-browser.png";
-            GError* err = nullptr;
-            GFile* file = g_file_new_for_path(icon_path);
-            GdkTexture* tex = gdk_texture_new_from_file(file, &err);
-            g_object_unref(file);
-            if (tex) {
-                // GTK4'te window'a doğrudan paintable olarak ikon ata
-                gtk_window_set_icon_name(GTK_WINDOW(window_), "ferman-browser");
-                g_object_unref(tex);
-                icon_set = true;
+            // Geliştirme fallback: kaynak klasöründen oku
+            static const char* kIconPaths[] = {
+                "resources/favicon.png",
+                "resources/icons/512x512/apps/ferman-browser.png",
+                nullptr
+            };
+            for (int i = 0; kIconPaths[i]; ++i) {
+                GError* err = nullptr;
+                GdkPixbuf* pb = gdk_pixbuf_new_from_file(kIconPaths[i], &err);
+                if (pb) {
+                    gtk_window_set_default_icon_name("ferman-browser");
+                    g_object_unref(pb);
+                    icon_set = true;
+                    break;
+                }
+                if (err) g_error_free(err);
             }
-            if (err) g_error_free(err);
+            icon_set = true;
         }
     }
 
