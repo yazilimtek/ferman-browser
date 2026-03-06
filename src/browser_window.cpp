@@ -908,6 +908,8 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     webkit_settings_set_enable_webgl(wk_settings, TRUE);
     webkit_settings_set_enable_webaudio(wk_settings, TRUE);
     webkit_settings_set_enable_page_cache(wk_settings, TRUE);
+    webkit_settings_set_allow_file_access_from_file_urls(wk_settings, TRUE);
+    webkit_settings_set_allow_universal_access_from_file_urls(wk_settings, TRUE);
     webkit_settings_set_hardware_acceleration_policy(wk_settings,
         prefs.hardware_accel
             ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
@@ -928,6 +930,7 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     g_signal_connect(tab->webview, "context-menu",        G_CALLBACK(OnContextMenuCb),        this);
     g_signal_connect(tab->webview, "create",              G_CALLBACK(OnCreateWebViewCb),      this);
     g_signal_connect(tab->webview, "print",               G_CALLBACK(OnPrintCb),              this);
+    g_signal_connect(tab->webview, "run-file-chooser",    G_CALLBACK(OnFileChooserCb),        this);
 
     // Stack'e ekle
     std::string page_name = "tab_" + std::to_string(tab->id);
@@ -1092,14 +1095,9 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
             webkit_web_view_load_html(WEBKIT_WEB_VIEW(tab->webview), home_html.c_str(), nullptr);
         } else {
             std::string load_url = url;
-            if (load_url.rfind("view-source:", 0) == 0) {
-                // view-source: WebKit destekler — doğrudan yükle
-                webkit_web_view_load_uri(WEBKIT_WEB_VIEW(tab->webview), load_url.c_str());
-            } else {
-                if (load_url.find("://") == std::string::npos)
-                    load_url = "https://" + load_url;
-                webkit_web_view_load_uri(WEBKIT_WEB_VIEW(tab->webview), load_url.c_str());
-            }
+            if (load_url.find("://") == std::string::npos)
+                load_url = "https://" + load_url;
+            webkit_web_view_load_uri(WEBKIT_WEB_VIEW(tab->webview), load_url.c_str());
         }
     }
     if (switch_to) SwitchToTab(tab);
@@ -1796,6 +1794,13 @@ bool BrowserWindow::OnDecidePolicy(WebKitWebView* wv,
     // RESPONSE: İndirilebilir içerik → download'a yönlendir, boş sekme açma
     if (type == WEBKIT_POLICY_DECISION_TYPE_RESPONSE) {
         WebKitResponsePolicyDecision* resp = WEBKIT_RESPONSE_POLICY_DECISION(dec);
+        WebKitURIResponse* uri_resp = webkit_response_policy_decision_get_response(resp);
+        const char* resp_uri = webkit_uri_response_get_uri(uri_resp);
+        // view-source: URL'leri için download'a yönlendirme — WebKit native renderer kullanır
+        if (resp_uri && g_str_has_prefix(resp_uri, "view-source:")) {
+            webkit_policy_decision_use(dec);
+            return true;
+        }
         if (!webkit_response_policy_decision_is_mime_type_supported(resp)) {
             webkit_policy_decision_download(dec);
             return true;
@@ -2001,16 +2006,60 @@ bool BrowserWindow::OnContextMenu(WebKitWebView* wv,
             G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer ud) {
                 auto* self = static_cast<BrowserWindow*>(ud);
                 if (!self->active_tab_ || !self->active_tab_->webview) return;
-                const char* uri = webkit_web_view_get_uri(
-                    WEBKIT_WEB_VIEW(self->active_tab_->webview));
-                if (!uri || !*uri) return;
-                std::string src_url = "view-source:";
-                // view-source: zaten varsa çıkar
-                if (std::string(uri).rfind("view-source:", 0) == 0)
-                    src_url = uri;
-                else
-                    src_url += uri;
-                self->NewTab(src_url);
+                struct SrcCtx { BrowserWindow* self; };
+                auto* ctx = new SrcCtx{self};
+                webkit_web_view_evaluate_javascript(
+                    WEBKIT_WEB_VIEW(self->active_tab_->webview),
+                    "document.documentElement.outerHTML", -1,
+                    nullptr, nullptr, nullptr,
+                    [](GObject* src, GAsyncResult* res, gpointer ud) {
+                        auto* c = static_cast<SrcCtx*>(ud);
+                        GError* err = nullptr;
+                        JSCValue* val = webkit_web_view_evaluate_javascript_finish(
+                            WEBKIT_WEB_VIEW(src), res, &err);
+                        if (err) { g_error_free(err); delete c; return; }
+                        if (!val) { delete c; return; }
+                        char* raw = jsc_value_to_string(val);
+                        g_object_unref(val);
+                        if (!raw) { delete c; return; }
+                        // HTML escape
+                        std::string escaped;
+                        escaped.reserve(strlen(raw));
+                        for (const char* p = raw; *p; ++p) {
+                            switch (*p) {
+                                case '&': escaped += "&amp;";  break;
+                                case '<': escaped += "&lt;";   break;
+                                case '>': escaped += "&gt;";   break;
+                                default:  escaped += *p;       break;
+                            }
+                        }
+                        g_free(raw);
+                        std::string page =
+                            "<!DOCTYPE html><html><head>"
+                            "<meta charset='utf-8'>"
+                            "<title>Sayfa Kayna\xc4\x9f\xc4\xb1</title>"
+                            "<style>"
+                            "body{margin:0;background:#1e1e1e;color:#d4d4d4;"
+                            "font-family:'Courier New',monospace;font-size:13px;}"
+                            "pre{margin:0;padding:16px;white-space:pre-wrap;"
+                            "word-break:break-all;line-height:1.6;tab-size:2;}"
+                            "</style></head><body>"
+                            "<pre>" + escaped + "</pre>"
+                            "</body></html>";
+                        struct OpenCtx { BrowserWindow* self; std::string page; };
+                        auto* oc = new OpenCtx{c->self, std::move(page)};
+                        delete c;
+                        g_idle_add([](gpointer p) -> gboolean {
+                            auto* o = static_cast<OpenCtx*>(p);
+                            Tab* t = o->self->NewTab("about:blank", false, true);
+                            if (t && t->webview)
+                                webkit_web_view_load_html(
+                                    WEBKIT_WEB_VIEW(t->webview),
+                                    o->page.c_str(), nullptr);
+                            delete o;
+                            return G_SOURCE_REMOVE;
+                        }, oc);
+                    }, ctx);
             }), this);
         webkit_context_menu_append(menu,
             webkit_context_menu_item_new_from_gaction(
@@ -2073,6 +2122,7 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
     g_signal_connect(new_wv, "context-menu",         G_CALLBACK(OnContextMenuCb),        this);
     g_signal_connect(new_wv, "create",               G_CALLBACK(OnCreateWebViewCb),      this);
     g_signal_connect(new_wv, "print",                G_CALLBACK(OnPrintCb),              this);
+    g_signal_connect(new_wv, "run-file-chooser",     G_CALLBACK(OnFileChooserCb),        this);
 
     // Stack'e ekle
     std::string page_name = "tab_" + std::to_string(tab->id);
@@ -2213,6 +2263,84 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
 
 void BrowserWindow::OnPrint(WebKitWebView*, WebKitPrintOperation* op) {
     webkit_print_operation_run_dialog(op, GTK_WINDOW(window_));
+}
+
+gboolean BrowserWindow::OnFileChooser(WebKitWebView*, WebKitFileChooserRequest* req) {
+    gboolean allow_multiple = webkit_file_chooser_request_get_select_multiple(req);
+
+    GtkFileDialog* dlg = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dlg, allow_multiple ? "Dosya Seç" : "Dosya Seç");
+    gtk_file_dialog_set_modal(dlg, TRUE);
+
+    // MIME filtrelerini WebKit'ten al
+    const gchar* const* mime_types = webkit_file_chooser_request_get_mime_types(req);
+    if (mime_types && mime_types[0]) {
+        GtkFileFilter* filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(filter, "İzin verilen dosyalar");
+        for (int i = 0; mime_types[i]; ++i)
+            gtk_file_filter_add_mime_type(filter, mime_types[i]);
+        GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+        g_list_store_append(filters, filter);
+        gtk_file_dialog_set_filters(dlg, G_LIST_MODEL(filters));
+        gtk_file_dialog_set_default_filter(dlg, filter);
+        g_object_unref(filters);
+        g_object_unref(filter);
+    }
+
+    struct Ctx {
+        WebKitFileChooserRequest* req;
+        gboolean multiple;
+    };
+    g_object_ref(req);
+    auto* ctx = new Ctx{req, allow_multiple};
+
+    if (allow_multiple) {
+        gtk_file_dialog_open_multiple(dlg, GTK_WINDOW(window_), nullptr,
+            [](GObject* src, GAsyncResult* res, gpointer ud) {
+                auto* c = static_cast<Ctx*>(ud);
+                GListModel* files = gtk_file_dialog_open_multiple_finish(
+                    GTK_FILE_DIALOG(src), res, nullptr);
+                if (files) {
+                    guint n = g_list_model_get_n_items(files);
+                    auto** paths = g_new0(gchar*, n + 1);
+                    for (guint i = 0; i < n; ++i) {
+                        GFile* f = G_FILE(g_list_model_get_item(files, i));
+                        paths[i] = g_file_get_path(f);
+                        g_object_unref(f);
+                    }
+                    webkit_file_chooser_request_select_files(
+                        c->req, const_cast<const gchar**>(paths));
+                    for (guint i = 0; i < n; ++i) g_free(paths[i]);
+                    g_free(paths);
+                    g_object_unref(files);
+                } else {
+                    webkit_file_chooser_request_cancel(c->req);
+                }
+                g_object_unref(c->req);
+                delete c;
+            }, ctx);
+    } else {
+        gtk_file_dialog_open(dlg, GTK_WINDOW(window_), nullptr,
+            [](GObject* src, GAsyncResult* res, gpointer ud) {
+                auto* c = static_cast<Ctx*>(ud);
+                GFile* f = gtk_file_dialog_open_finish(
+                    GTK_FILE_DIALOG(src), res, nullptr);
+                if (f) {
+                    gchar* path = g_file_get_path(f);
+                    const gchar* paths[] = { path, nullptr };
+                    webkit_file_chooser_request_select_files(c->req, paths);
+                    g_free(path);
+                    g_object_unref(f);
+                } else {
+                    webkit_file_chooser_request_cancel(c->req);
+                }
+                g_object_unref(c->req);
+                delete c;
+            }, ctx);
+    }
+
+    g_object_unref(dlg);
+    return TRUE;
 }
 
 // ── Dahili sayfa HTML oluşturucular ──────────────────────────────────
@@ -5708,16 +5836,17 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
                 } else {
                     // Hata ile kurulum sayfasına geri dön
                     std::string error_url = "ferman://setup?error=" + error;
-                    g_idle_add([](gpointer ud) -> gboolean {
-                        auto* pair = static_cast<std::pair<BrowserWindow*, std::string>*>(ud);
-                        if (pair->first->active_tab_) {
+                    struct ErrCtx { BrowserWindow* self; std::string url; };
+                    auto* ec = new ErrCtx{this, error_url};
+                    g_idle_add([](gpointer p) -> gboolean {
+                        auto* e = static_cast<ErrCtx*>(p);
+                        if (e->self->active_tab_ && e->self->active_tab_->webview)
                             webkit_web_view_load_uri(
-                                WEBKIT_WEB_VIEW(pair->first->active_tab_->webview),
-                                pair->second.c_str());
-                        }
-                        delete pair;
+                                WEBKIT_WEB_VIEW(e->self->active_tab_->webview),
+                                e->url.c_str());
+                        delete e;
                         return G_SOURCE_REMOVE;
-                    }, new std::pair<BrowserWindow*, std::string>(this, error_url));
+                    }, ec);
                 }
             });
         return; // Async işlem, HTML yükleme yok
@@ -6171,6 +6300,11 @@ gboolean BrowserWindow::OnPrintCb(WebKitWebView* wv,
                                     gpointer ud) {
     static_cast<BrowserWindow*>(ud)->OnPrint(wv, op);
     return TRUE;
+}
+gboolean BrowserWindow::OnFileChooserCb(WebKitWebView* wv,
+                                         WebKitFileChooserRequest* req,
+                                         gpointer ud) {
+    return static_cast<BrowserWindow*>(ud)->OnFileChooser(wv, req);
 }
 void BrowserWindow::OnMouseTargetChangedCb(WebKitWebView* wv,
                                             WebKitHitTestResult* hit,

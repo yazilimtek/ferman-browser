@@ -43,6 +43,7 @@ private:
     bool  OnContextMenu(WebKitWebView* wv, WebKitContextMenu* menu, WebKitHitTestResult* hit);
     WebKitWebView* OnCreateWebView(WebKitWebView* wv, WebKitNavigationAction* action);
     void  OnPrint(WebKitWebView* wv, WebKitPrintOperation* op);
+    gboolean OnFileChooser(WebKitWebView* wv, WebKitFileChooserRequest* req);
     void  ShowSettingsPage();
     void  UpdateFavButton();
     void  ShowUrlSuggestions(const std::string& text);
@@ -117,6 +118,7 @@ private:
     static gboolean OnContextMenuCb(WebKitWebView*, WebKitContextMenu*, WebKitHitTestResult*, gpointer);
     static WebKitWebView* OnCreateWebViewCb(WebKitWebView*, WebKitNavigationAction*, gpointer);
     static gboolean OnPrintCb(WebKitWebView*, WebKitPrintOperation*, gpointer);
+    static gboolean OnFileChooserCb(WebKitWebView*, WebKitFileChooserRequest*, gpointer);
 
     GtkWidget* window_          = nullptr;
     GtkWidget* tab_box_         = nullptr;
