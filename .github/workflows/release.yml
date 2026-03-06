@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            g++ \
+            libgtk-4-dev \
+            libwebkitgtk-6.0-dev \
+            libsqlite3-dev \
+            libsoup-3.0-dev \
+            libpoppler-glib-dev \
+            libzip-dev \
+            pkg-config \
+            ninja-build \
+            dpkg-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAPP_VERSION=${{ steps.version.outputs.VERSION }}
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Package (.deb + .tar.gz)
+        run: |
+          cd build
+          cpack -G DEB
+          cpack -G TGZ
+
+      - name: List packages
+        run: ls -lh build/*.deb build/*.tar.gz
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Son iki tag arasındaki commit mesajlarını al
+          PREV_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]' | sed -n '2p')
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            COMMITS=$(git log --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD)
+          fi
+          echo "COMMITS<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Ferman Browser v${{ steps.version.outputs.VERSION }}"
+          body: |
+            ## Ferman Browser v${{ steps.version.outputs.VERSION }}
+
+            ### Değişiklikler
+            ${{ steps.changelog.outputs.COMMITS }}
+
+            ### Kurulum
+
+            **Debian / Ubuntu / Pardus (.deb):**
+            ```bash
+            sudo dpkg -i ferman-browser-${{ steps.version.outputs.VERSION }}-linux-amd64.deb
+            ```
+
+            **Taşınabilir (.tar.gz):**
+            ```bash
+            tar xzf ferman-browser-${{ steps.version.outputs.VERSION }}-linux-amd64.tar.gz
+            cd ferman-browser-${{ steps.version.outputs.VERSION }}-linux-amd64
+            sudo ./install.sh
+            ```
+          files: |
+            build/*.deb
+            build/*.tar.gz
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}

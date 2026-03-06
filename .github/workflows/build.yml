@@ -1,8 +1,9 @@
-name: Build
+name: CI Build
 
 on:
   push:
     branches: [ main, develop ]
+    tags-ignore: [ 'v*' ]
   pull_request:
     branches: [ main ]
 
@@ -22,6 +23,10 @@ jobs:
             g++ \
             libgtk-4-dev \
             libwebkitgtk-6.0-dev \
+            libsqlite3-dev \
+            libsoup-3.0-dev \
+            libpoppler-glib-dev \
+            libzip-dev \
             pkg-config \
             ninja-build
 
@@ -35,3 +40,10 @@ jobs:
         run: |
           ls -lh build/ferman-browser
           file build/ferman-browser
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ferman-browser-linux-amd64
+          path: build/ferman-browser
+          retention-days: 7

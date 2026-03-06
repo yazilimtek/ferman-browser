@@ -1,25 +1,29 @@
 # Ferman Browser
 
-Ferman Browser, GTK4 ve WebKitGTK kullanılarak C++20 ile yazılmış hafif, hızlı ve açık kaynaklı bir web tarayıcısıdır.
+Ferman Browser, GTK4 ve WebKitGTK kullanılarak C++20 ile yazılmış hafif, hızlı ve açık kaynaklı bir web tarayıcısıdır. ferman.net.tr AI platformuyla entegre çalışır.
 
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-blue)
 ![Language](https://img.shields.io/badge/language-C%2B%2B20-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Build](https://img.shields.io/github/actions/workflow/status/pardusus/ferman-browser/build.yml?branch=main)
 
 ## Özellikler
 
-- **Kurulum Karşılama Ekranı** — İlk açılışta ferman.net.tr ile entegrasyon
-- **Sekme sistemi** — Çoklu sekme, header bar'da gösterim
-- **Ana sayfa** — Gömülü başlangıç sayfası ve Google arama
-- **Akıllı adres çubuğu** — URL veya arama sorgusu olarak algılar
-- **Yapay Zeka Entegrasyonu** — Çoklu AI provider desteği (OpenAI, Anthropic, DeepSeek, Groq)
-- **Favicon desteği** — Her sekme için site simgesi
-- **Sekme bilgileri** — `#id`, favicon ve site adı her sekmede görünür
-- **Sekme davranışı** — Son sekme kapanınca uygulama kapanmaz, ana sayfa açılır
-- **Adres çubuğu araçları** — Temizle, kopyala ve favori butonları
-- **Güvenli Ayarlar** — API key şifreli saklama
-- **GTK4 native UI** — Modern, sistem temasıyla uyumlu arayüz
+- **Sekme sistemi** — Çoklu sekme, `#id` etiketiyle header bar'da gösterim
+- **Ana sayfa** — Gömülü başlangıç sayfası ve arama motoru desteği
+- **Akıllı adres çubuğu** — URL veya arama sorgusu olarak otomatik algılar
+- **Yapay Zeka Paneli** — Sağ panel AI sohbeti, çoklu provider desteği
+- **Çoklu AI Ajan** — Farklı API key ve model kombinasyonuyla ajan profilleri
+- **AI Sohbet Geçmişi** — Tüm AI sohbetleri yerel SQLite'ta saklanır
+- **Chat Operatörleri** — `@ajan` ile ajan seçimi, `#sekme-id` ile sekme içeriği ekleme, '*sohbet-id' ile önceki sohbeti ekleme
+- **Sekme içeriği okuma** — `#1`, `#2` ile sekme sayfası HTML'den arındırılarak AI'ya eklenir
+- **Favicon desteği** — Her sekme için site simgesi otomatik yüklenir
+- **Yer imi yönetimi** — Klasör destekli yer imi sistemi
+- **İndirme yönetimi** — Dosya indirme takibi
+- **Geçmiş yönetimi** — Ziyaret geçmişi kaydı
+- **Adres çubuğu araçları** — Temizle, kopyala, favori ekle butonları
+- **Güvenli API key saklama** — Şifrelenmiş yerel depolama
+- **ferman.net.tr entegrasyonu** — Kurulum sırasında otomatik hesap bağlama
+- **GTK4 native UI** — Sistem temasıyla uyumlu modern arayüz
 
 ## Gereksinimler
 
@@ -276,7 +280,26 @@ Tarayıcıyı ilk kez açtığınızda kurulum karşılama ekranı görünür:
 | URL temizle | Adres çubuğu yanı `✕` |
 | URL kopyala | Adres çubuğu yanı kopyala ikonu |
 | Ayarlar | Menü → Ayarlar veya `ferman://ayarlar` |
-| Yapay Zeka | Sağ panel butonu |
+| Yapay Zeka | Sağ panel butonu (AI ikonu) |
+
+### AI Chat Operatörleri
+
+AI sohbet panelinde özel operatörler kullanılabilir:
+
+| Operatör | Açıklama | Örnek |
+|---|---|---|
+| `@ajan-adı` | Belirli bir AI ajanını seç | `@gpt bu sayfayı özetle` |
+| `#sekme-id` | Sekme içeriğini sohbete ekle (HTML arındırılır) | `#1 bu sayfayı Türkçeye çevir` |
+
+**`#sekme-id` kullanımı:**
+- Sekme başlıklarındaki `#1`, `#2` gibi numaraları kullanın
+- Sekme sayfasının tüm metni HTML etiketlerinden temizlenerek AI'ya sistem mesajı olarak eklenir
+- Birden fazla sekme aynı anda kullanılabilir: `#1 ve #2 sayfalarını karşılaştır`
+
+**`@ajan` kullanımı:**
+- Ayarlar → AI Ajanları bölümünden ajanlar tanımlanır
+- `@` yazınca otomatik tamamlama listesi açılır
+- Varsayılan ajan her zaman dropdown'dan seçilebilir
 
 ## Katkı
 

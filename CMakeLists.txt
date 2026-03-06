@@ -1,7 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
-project(ferman-browser LANGUAGES CXX)
 
-set(APP_VERSION "1.0.0")
+# APP_VERSION: cmake -DAPP_VERSION=1.2.3 ile geçilebilir (CI/release tag'den)
+if(NOT DEFINED APP_VERSION OR APP_VERSION STREQUAL "")
+    set(APP_VERSION "1.0.0")
+endif()
+
+project(ferman-browser VERSION ${APP_VERSION} LANGUAGES CXX)
+
 set(APP_NAME    "Ferman Browser")
 set(APP_BINARY  "ferman-browser")
 
