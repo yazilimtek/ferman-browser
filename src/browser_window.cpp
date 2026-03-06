@@ -87,24 +87,34 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     {
         static bool icon_set = false;
         if (!icon_set) {
-            // Geliştirme fallback: kaynak klasöründen oku
-            static const char* kIconPaths[] = {
-                "resources/favicon.png",
-                "resources/icons/512x512/apps/ferman-browser.png",
-                nullptr
-            };
-            for (int i = 0; kIconPaths[i]; ++i) {
-                GError* err = nullptr;
-                GdkPixbuf* pb = gdk_pixbuf_new_from_file(kIconPaths[i], &err);
-                if (pb) {
-                    gtk_window_set_default_icon_name("ferman-browser");
-                    g_object_unref(pb);
-                    icon_set = true;
-                    break;
+            // Önce sistem ikonunu dene
+            GtkIconTheme* theme = gtk_icon_theme_get_for_display(gdk_display_get_default());
+            if (gtk_icon_theme_has_icon(theme, "ferman-browser")) {
+                gtk_window_set_default_icon_name("ferman-browser");
+                icon_set = true;
+            } else {
+                // Fallback: kaynak klasöründen oku
+                static const char* kIconPaths[] = {
+                    "/usr/local/share/icons/hicolor/512x512/apps/ferman-browser.png",
+                    "/usr/share/icons/hicolor/512x512/apps/ferman-browser.png",
+                    "resources/favicon.png",
+                    "resources/icons/512x512/apps/ferman-browser.png",
+                    nullptr
+                };
+                for (int i = 0; kIconPaths[i]; ++i) {
+                    GError* err = nullptr;
+                    GFile* file = g_file_new_for_path(kIconPaths[i]);
+                    GdkTexture* tex = gdk_texture_new_from_file(file, &err);
+                    g_object_unref(file);
+                    if (tex) {
+                        gtk_window_set_default_icon_name("ferman-browser");
+                        g_object_unref(tex);
+                        icon_set = true;
+                        break;
+                    }
+                    if (err) g_error_free(err);
                 }
-                if (err) g_error_free(err);
             }
-            icon_set = true;
         }
     }
 

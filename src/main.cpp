@@ -2,6 +2,8 @@
 #include <gtk/gtk.h>
 
 static void on_activate(GtkApplication* app, gpointer) {
+    // Uygulama ikonunu ayarla
+    gtk_window_set_default_icon_name("ferman-browser");
     new ferman::BrowserWindow(app);
 }
 
