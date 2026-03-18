@@ -25,6 +25,7 @@ jobs:
             libwebkitgtk-6.0-dev \
             libsqlite3-dev \
             libsoup-3.0-dev \
+            libjson-glib-dev \
             libpoppler-glib-dev \
             libzip-dev \
             pkg-config \
