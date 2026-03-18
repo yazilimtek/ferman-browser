@@ -48,7 +48,6 @@ static const char* kTabCSS = R"(
     background-color: alpha(@window_bg_color, 0.92);
     border: 1px solid alpha(@window_fg_color, 0.10);
     border-radius: 0 4px 0 0;
-    max-width: 480px;
 }
 .bookmarked {
     color: #e6a817;
@@ -2404,12 +2403,6 @@ font-size:1.4rem;border:1px solid rgba(255,255,255,.1)}
 <input id="q" type="text" placeholder=")html" + placeholder + R"html(" autocomplete="off" autofocus>
 <button class="btn" type="submit">Ara</button>
 </form>
-<div class="sc">
-<a href="https://google.com"><div class="ic">&#9654;</div><span>Google</span></a>
-<a href="https://github.com"><div class="ic">&#128025;</div><span>GitHub</span></a>
-<a href="https://youtube.com"><div class="ic">&#128309;</div><span>Youtube</span></a>
-<a href="https://wikipedia.org"><div class="ic">&#128214;</div><span>Wikipedia</span></a>
-</div>
 <script>
 var searchUrl=')html" + search_url + R"html(';
 function doSearch(e){e.preventDefault();
@@ -2835,7 +2828,7 @@ border-radius:8px;padding:8px 18px;font-size:.82rem;color:rgba(255,255,255,.75)}
 </style></head><body>
 <div class="card">
   <div class="logo">Ferman Browser</div>
-  <div class="version">Sürüm 0.3.0 — Şubat 2026</div>
+  <div class="version">Sürüm 1.0.2 — Mart 2026</div>
   <div class="badges">
     <span class="badge">GTK4</span>
     <span class="badge">WebKitGTK 6.0</span>
@@ -2849,8 +2842,26 @@ border-radius:8px;padding:8px 18px;font-size:.82rem;color:rgba(255,255,255,.75)}
     <a class="link" href="https://github.com/yazilimtek/ferman-browser">Kaynak Kodu</a>
     <a class="link" href="ferman://ayarlar">Ayarlar</a>
   </div>
+  <button onclick="checkUpdates()" style="margin-top:24px;background:linear-gradient(90deg,#e94560,#4dabf7);
+    border:none;border-radius:10px;padding:12px 32px;color:#fff;font-size:.9rem;font-weight:600;
+    cursor:pointer;transition:transform .2s,box-shadow .2s" 
+    onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 8px 20px rgba(233,69,96,.4)'" 
+    onmouseout="this.style.transform='';this.style.boxShadow=''">
+    🔄 Güncellemeleri Kontrol Et
+  </button>
+  <div id="update-status" style="margin-top:16px;font-size:.85rem;color:rgba(255,255,255,.5)"></div>
   <div class="copy">&copy; 2026 ferman Project — MIT Lisansı</div>
 </div>
+<script>
+function checkUpdates(){
+  var btn=document.querySelector('button');
+  var status=document.getElementById('update-status');
+  btn.disabled=true;
+  btn.textContent='⏳ Kontrol ediliyor...';
+  status.textContent='';
+  window.location.href='ferman://check-updates';
+}
+</script>
 </body></html>)html";
 }
 
@@ -4237,42 +4248,42 @@ void BrowserWindow::ToggleBookmarksBar() {
 // ── AI Panel CSS ──────────────────────────────────────────────────────────────
 static const char* kAiCSS = R"css(
 .ai-btn{background:#f0f0f0;color:#333;border:1px solid #d0d0d0;
-border-radius:6px;font-weight:600;font-size:.82rem;padding:2px 10px;margin-left:4px}
-.ai-btn:hover{background:#e4e4e4}
-.ai-btn.suggested-action{background:#ddeeff;color:#1a6fcc;border-color:#aad0f5}
-.ai-panel{background:#ffffff;border-left:1px solid #e0e0e0}
-.ai-history-panel{background:#f8f8f8;border-right:1px solid #e0e0e0;min-width:230px}
-.ai-history-item{padding:8px 12px;border-bottom:1px solid #efefef;color:#333;font-size:.83rem}
-.ai-history-item:hover{background:#eef4ff}
-.ai-history-item.selected{background:#ddeeff}
-.ai-history-title{font-weight:600;font-size:.83rem;color:#222}
-.ai-history-date{font-size:.72rem;color:#999;margin-top:2px}
+border-radius:6px;font-weight:600;font-size:.82rem;padding:2px 10px;margin-left:4px;}
+.ai-btn:hover{background:#e4e4e4;}
+.ai-btn.suggested-action{background:#ddeeff;color:#1a6fcc;border-color:#aad0f5;}
+.ai-panel{background:#ffffff;border-left:1px solid #e0e0e0;}
+.ai-history-panel{background:#f8f8f8;border-right:1px solid #e0e0e0;min-width:230px;}
+.ai-history-item{padding:8px 12px;border-bottom:1px solid #efefef;color:#333;font-size:.83rem;}
+.ai-history-item:hover{background:#eef4ff;}
+.ai-history-item.selected{background:#ddeeff;}
+.ai-history-title{font-weight:600;font-size:.83rem;color:#222;}
+.ai-history-date{font-size:.72rem;color:#999;margin-top:2px;}
 .ai-bubble-user{background:#ddeeff;border-radius:14px 14px 4px 14px;
-padding:9px 14px;margin:4px 8px 4px 48px;color:#1a3a5c;font-size:.88rem;line-height:1.5}
+padding:9px 14px;margin:4px 8px 4px 48px;color:#1a3a5c;font-size:.88rem;line-height:1.5;}
 .ai-bubble-ai{background:#f3f3f3;border-radius:14px 14px 14px 4px;
-padding:9px 14px;margin:4px 48px 4px 8px;color:#222;font-size:.88rem;line-height:1.5}
-.ai-bubble-ai.loading{min-height:40px;color:#999;font-style:italic}
-.ai-input-area{background:#fafafa;border-top:1px solid #e0e0e0;padding:8px}
+padding:9px 14px;margin:4px 48px 4px 8px;color:#222;font-size:.88rem;line-height:1.5;}
+.ai-bubble-ai.loading{min-height:40px;color:#999;font-style:italic;}
+.ai-input-area{background:#fafafa;border-top:1px solid #e0e0e0;padding:8px;}
 .ai-input-view{background:#fff;border:1px solid #d0d0d0;border-radius:8px;
-color:#222;font-size:.88rem;padding:6px;caret-color:#333}
-.ai-input-view text{color:#222}
+color:#222;font-size:.88rem;padding:6px;caret-color:#333;}
+.ai-input-view text{color:#222;}
 .ai-send-btn{background:#1a6fcc;color:#fff;border:none;border-radius:7px;
-font-weight:600;padding:6px 16px;font-size:.84rem}
-.ai-send-btn:hover{background:#155bb5}
-.ai-header{background:#f5f5f5;padding:7px 10px;border-bottom:1px solid #e0e0e0}
-.ai-title-lbl{color:#333;font-weight:700;font-size:.88rem}
+font-weight:600;padding:6px 16px;font-size:.84rem;}
+.ai-send-btn:hover{background:#155bb5;}
+.ai-header{background:#f5f5f5;padding:7px 10px;border-bottom:1px solid #e0e0e0;}
+.ai-title-lbl{color:#333;font-weight:700;font-size:.88rem;}
 .ai-chip{background:#e8f0fe;color:#1a4fa0;border:1px solid #c5d8fc;
-border-radius:12px;padding:2px 8px;font-size:.78rem;margin:2px}
+border-radius:12px;padding:2px 8px;font-size:.78rem;margin:2px;}
 .ai-chip-remove{background:transparent;border:none;color:#999;
-font-size:.75rem;padding:0 3px;min-width:0;border-radius:99px}
-.ai-chip-remove:hover{background:#fde8e8;color:#c00}
-.ai-filter-bar{background:#f8f8f8;padding:6px 8px;border-bottom:1px solid #e0e0e0}
-.ai-loading{color:#888;font-size:.84rem;font-style:italic;padding:6px 12px}
+font-size:.75rem;padding:0 3px;min-width:0;border-radius:99px;}
+.ai-chip-remove:hover{background:#fde8e8;color:#c00;}
+.ai-filter-bar{background:#f8f8f8;padding:6px 8px;border-bottom:1px solid #e0e0e0;}
+.ai-loading{color:#888;font-size:.84rem;font-style:italic;padding:6px 12px;}
 .ai-new-chat-btn{background:#fff;color:#1a6fcc;border:1px solid #c5d8fc;
-border-radius:7px;font-size:.82rem;padding:4px 12px}
-.ai-new-chat-btn:hover{background:#eef4ff}
-.ai-combo-name{font-size:.86rem;font-weight:600;color:#222}
-.ai-combo-sub{font-size:.72rem;color:#999;margin-top:0}
+border-radius:7px;font-size:.82rem;padding:4px 12px;}
+.ai-new-chat-btn:hover{background:#eef4ff;}
+.ai-combo-name{font-size:.86rem;font-weight:600;color:#222;}
+.ai-combo-sub{font-size:.72rem;color:#999;margin-top:0;}
 )css";
 
 void BrowserWindow::BuildAiPanel() {
@@ -6161,6 +6172,23 @@ void BrowserWindow::HandlefermanScheme(const std::string& uri) {
             }, ctx2);
         g_object_unref(fd2);
         return;
+    } else if (uri == "ferman://check-updates") {
+        // Güncelleme kontrolü - UpdateManager'ı çağır
+        struct UpdateCallbackData {
+            BrowserWindow* window;
+            UpdateInfo info;
+        };
+        
+        UpdateManager::Get().CheckForUpdates([this](const UpdateInfo& info) {
+            auto* data = new UpdateCallbackData{this, info};
+            g_idle_add([](gpointer user_data) -> gboolean {
+                auto* cb_data = static_cast<UpdateCallbackData*>(user_data);
+                cb_data->window->ShowUpdateDialog(cb_data->info);
+                delete cb_data;
+                return G_SOURCE_REMOVE;
+            }, data);
+        });
+        return;
     } else if (uri == "ferman://gecmis") {
         html  = BuildHistoryHTML();
         title = "Geçmiş — ferman";
@@ -6392,6 +6420,80 @@ void BrowserWindow::ShowAiSetupWarning() {
             }
             g_object_unref(src);
         }, this);
+}
+
+// ── Güncelleme Dialog'u ──────────────────────────────────────────────────────
+void BrowserWindow::ShowUpdateDialog(const UpdateInfo& info) {
+    if (!info.is_newer) {
+        // Güncelleme yok - bilgi dialog'u göster
+        GtkAlertDialog* dlg = gtk_alert_dialog_new("Güncel Sürüm");
+        std::string detail = "Ferman Browser'ın en güncel sürümünü kullanıyorsunuz.\n\n"
+            "Mevcut sürüm: " + UpdateManager::Get().GetCurrentVersion();
+        gtk_alert_dialog_set_detail(dlg, detail.c_str());
+        
+        const char* btns[] = { "Tamam", nullptr };
+        gtk_alert_dialog_set_buttons(dlg, btns);
+        
+        gtk_alert_dialog_choose(dlg, GTK_WINDOW(window_), nullptr, nullptr, nullptr);
+        g_object_unref(dlg);
+        return;
+    }
+    
+    // Yeni sürüm mevcut - güncelleme dialog'u
+    std::string title = "Yeni Sürüm Mevcut: " + info.version;
+    GtkAlertDialog* dlg = gtk_alert_dialog_new(title.c_str());
+    
+    std::string detail = "Ferman Browser'ın yeni bir sürümü yayınlandı!\n\n";
+    detail += "Mevcut sürüm: " + UpdateManager::Get().GetCurrentVersion() + "\n";
+    detail += "Yeni sürüm: " + info.version + "\n\n";
+    
+    if (!info.release_notes.empty()) {
+        detail += "Sürüm Notları:\n" + info.release_notes.substr(0, 200);
+        if (info.release_notes.length() > 200) detail += "...";
+        detail += "\n\n";
+    }
+    
+    detail += "Güncellemeyi indirmek ister misiniz?";
+    gtk_alert_dialog_set_detail(dlg, detail.c_str());
+    
+    const char* btns[] = { "İptal", "DEB İndir", "TAR.GZ İndir", "GitHub'da Aç", nullptr };
+    gtk_alert_dialog_set_buttons(dlg, btns);
+    gtk_alert_dialog_set_cancel_button(dlg, 0);
+    gtk_alert_dialog_set_default_button(dlg, 1);
+    
+    struct UpdateContext {
+        BrowserWindow* self;
+        std::string deb_url;
+        std::string tar_url;
+    };
+    
+    auto* ctx = new UpdateContext{this, info.download_url_deb, info.download_url_tar};
+    
+    gtk_alert_dialog_choose(dlg, GTK_WINDOW(window_), nullptr,
+        [](GObject* source, GAsyncResult* res, gpointer data) {
+            auto* ctx = static_cast<UpdateContext*>(data);
+            GtkAlertDialog* dlg = GTK_ALERT_DIALOG(source);
+            
+            GError* error = nullptr;
+            int response = gtk_alert_dialog_choose_finish(dlg, res, &error);
+            
+            if (error) {
+                g_error_free(error);
+            } else if (response == 1 && !ctx->deb_url.empty()) {
+                // DEB indir
+                ctx->self->NewTab(ctx->deb_url);
+            } else if (response == 2 && !ctx->tar_url.empty()) {
+                // TAR.GZ indir
+                ctx->self->NewTab(ctx->tar_url);
+            } else if (response == 3) {
+                // GitHub'da aç
+                ctx->self->NewTab("https://github.com/yazilimtek/ferman-browser/releases");
+            }
+            
+            delete ctx;
+        }, ctx);
+    
+    g_object_unref(dlg);
 }
 
 } // namespace ferman

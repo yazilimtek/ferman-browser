@@ -7,6 +7,7 @@
 #include "settings_manager.h"
 #include "ai_manager.h"
 #include "file_extractor.h"
+#include "update_manager.h"
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 #include <string>
@@ -66,6 +67,7 @@ private:
     void  HideFindBar();
     void  FindNext();
     void  FindPrev();
+    void  ShowUpdateDialog(const UpdateInfo& info);
 
     // ── AI Panel ──
     void  BuildAiPanel();
