@@ -8,7 +8,7 @@ struct Settings {
     std::string homepage         = "https://www.yandex.com.tr";
     double      default_zoom     = 1.0;
     bool        javascript_enabled = true;
-    bool        hardware_accel   = false;  // varsayılan NEVER (offset bug)
+    bool        hardware_accel   = true;  // varsayılan NEVER (offset bug)
     std::string language         = "tr";
     std::string search_engine    = "yandex";  // google|bing|yahoo|yandex|duckduckgo|baidu
     std::string download_dir           = "";        // boşsa ~/İndirilenler

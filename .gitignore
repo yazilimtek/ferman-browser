@@ -29,11 +29,14 @@ compile_commands.json
 # CEF binary dağıtımı (büyük, indirilebilir — projeye dahil değil)
 # İndirme: https://cef-builds.spotifycdn.com/index.html
 third_party/
-LCache/
 site/
 huaweiApp/
 iOSApp/
 androidApp/
+chromium-main/
+epiphany-main/
+cef_binarycef_binary_145.0.24+gad514df+chromium-145.0.7632.76_linux64/
+
 
 
 # Geçici dosyalar

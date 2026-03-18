@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <ctime>
 #include <cctype>
+#include <memory>
 
 // kHomeHTML artık BuildHomeHTML() ile dinamik oluşturuluyor (arama motoru ayarına göre)
 
@@ -112,12 +113,11 @@ BrowserWindow::BrowserWindow(GtkApplication* app) {
     static bool modules_inited = false;
     if (!modules_inited) {
         modules_inited = true;
-        // Memory pressure: herhangi bir WebKitNetworkSession oluşturulmadan önce çağrılmalı
         WebKitMemoryPressureSettings* mps = webkit_memory_pressure_settings_new();
-        webkit_memory_pressure_settings_set_memory_limit(mps, 512);
+        webkit_memory_pressure_settings_set_memory_limit(mps, 512);  // 1GB
         webkit_memory_pressure_settings_set_kill_threshold(mps, 0.95);
-        webkit_memory_pressure_settings_set_strict_threshold(mps, 0.80);
-        webkit_memory_pressure_settings_set_conservative_threshold(mps, 0.60);
+        webkit_memory_pressure_settings_set_strict_threshold(mps, 0.85);
+        webkit_memory_pressure_settings_set_conservative_threshold(mps, 0.75);  // 768MB eşik
         webkit_network_session_set_memory_pressure_settings(mps);
         webkit_memory_pressure_settings_free(mps);
 
@@ -794,89 +794,9 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     static WebKitUserContentManager* ucm = nullptr;
     if (!ucm) {
         ucm = webkit_user_content_manager_new();
-        static const char* kChromeSpoof = R"js(
+       static const char* kChromeSpoof = R"js(
 (function() {
-    // webdriver'ı tamamen sil — getter override yetmez, delete gerekiyor
-    try {
-        const desc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver');
-        if (desc) {
-            Object.defineProperty(Navigator.prototype, 'webdriver', {
-                get: () => undefined, configurable: true, enumerable: true
-            });
-        }
-    } catch(e) {}
-    try { delete navigator.__proto__.webdriver; } catch(e) {}
-
-    // window.chrome
-    Object.defineProperty(window, 'chrome', {
-        value: {
-            runtime: {
-                connect: function(){},
-                sendMessage: function(){},
-                id: undefined
-            },
-            loadTimes: function(){ return {}; },
-            csi: function(){ return {}; },
-            app: { isInstalled: false }
-        },
-        writable: false, configurable: false
-    });
-
-    // Plugins
-    Object.defineProperty(navigator, 'plugins', {
-        get: function() {
-            var plugins = [
-                { name:'Chrome PDF Plugin', filename:'internal-pdf-viewer', description:'Portable Document Format', length:1 },
-                { name:'Chrome PDF Viewer', filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai', description:'', length:1 },
-                { name:'Native Client', filename:'internal-nacl-plugin', description:'', length:2 }
-            ];
-            Object.setPrototypeOf(plugins, PluginArray.prototype);
-            return plugins;
-        }, configurable: true
-    });
-    Object.defineProperty(navigator, 'mimeTypes', {
-        get: function() {
-            var mt = [
-                { type:'application/pdf', suffixes:'pdf', description:'', enabledPlugin: {} },
-                { type:'application/x-nacl', suffixes:'', description:'Native Client Executable', enabledPlugin: {} }
-            ];
-            Object.setPrototypeOf(mt, MimeTypeArray.prototype);
-            return mt;
-        }, configurable: true
-    });
-
-    // Permissions API — Cloudflare notification izni sorgular
-    if (window.Permissions && window.Permissions.prototype) {
-        const origQuery = window.Permissions.prototype.query;
-        window.Permissions.prototype.query = function(params) {
-            if (params && params.name === 'notifications') {
-                return Promise.resolve({ state: Notification.permission, onchange: null });
-            }
-            return origQuery.apply(this, arguments);
-        };
-    }
-
-    // Navigator özellikleri
-    const nav_props = {
-        languages:           { get: () => ['tr-TR','tr','en-US','en'] },
-        hardwareConcurrency: { get: () => 8 },
-        deviceMemory:        { get: () => 8 },
-        platform:            { get: () => 'Linux x86_64' },
-        vendor:              { get: () => 'Google Inc.' },
-        maxTouchPoints:      { get: () => 0 },
-        connection:          { get: () => ({ effectiveType:'4g', rtt:50, downlink:10, saveData:false }) }
-    };
-    for (var k in nav_props) {
-        try { Object.defineProperty(navigator, k, Object.assign({ configurable:true, enumerable:true }, nav_props[k])); } catch(e) {}
-    }
-
-    // toString gizleme — native function gibi görünsün
-    const nativeToString = Function.prototype.toString;
-    const nativeFns = [Navigator.prototype.webdriver];
-    Function.prototype.toString = function() {
-        if (nativeFns.indexOf(this) >= 0) return 'function ' + this.name + '() { [native code] }';
-        return nativeToString.call(this);
-    };
+    // TEST: tüm spoof devre dışı
 })();
 )js";
         WebKitUserScript* script = webkit_user_script_new(
@@ -888,35 +808,81 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
         webkit_user_script_unref(script);
     }
 
-    // WebView — kalıcı network session ile
+// İlk sekme referans olarak saklanır, diğerleri ona bağlanır
+static WebKitWebView* s_ref_view = nullptr;
+
+if (s_ref_view && WEBKIT_IS_WEB_VIEW(s_ref_view)) {
+    // Mevcut process'e bağlan — yeni process açılmaz
     tab->webview = GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW,
-        "network-session", SessionManager::Get().GetSession(),
-        "user-content-manager", ucm,
+        "related-view",          s_ref_view,
+        "user-content-manager",  ucm,
         nullptr));
+} else {
+    // İlk WebView — yeni process başlatır
+    // WebView — mevcut sekme varsa aynı process'e bağlan
+    {
+        WebKitWebView* ref_view = nullptr;
+        for (auto* t : tabs_) {
+            if (t->webview && WEBKIT_IS_WEB_VIEW(t->webview)) {
+                ref_view = WEBKIT_WEB_VIEW(t->webview);
+                break;
+            }
+        }
+        if (ref_view) {
+            tab->webview = GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW,
+                "related-view",         ref_view,
+                "user-content-manager", ucm,
+                nullptr));
+        } else {
+            tab->webview = GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW,
+                "network-session",      SessionManager::Get().GetSession(),
+                "user-content-manager", ucm,
+                nullptr));
+        }
+    }
+    s_ref_view = WEBKIT_WEB_VIEW(tab->webview);
+    g_object_add_weak_pointer(G_OBJECT(s_ref_view), (gpointer*)&s_ref_view);
+}
+
     WebKitSettings* wk_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(tab->webview));
-    // Chrome UA — Google ve modern siteler için (tam platform bilgisi dahil)
-    webkit_settings_set_user_agent(wk_settings,
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-    const auto& prefs = SettingsManager::Get().Prefs();
-    webkit_settings_set_enable_javascript(wk_settings, prefs.javascript_enabled);
-    webkit_settings_set_enable_media(wk_settings, TRUE);
-    webkit_settings_set_javascript_can_open_windows_automatically(wk_settings, TRUE);
-    webkit_settings_set_allow_modal_dialogs(wk_settings, TRUE);
-    webkit_settings_set_enable_smooth_scrolling(wk_settings, TRUE);
-    webkit_settings_set_media_playback_requires_user_gesture(wk_settings, FALSE);
-    webkit_settings_set_enable_webgl(wk_settings, TRUE);
-    webkit_settings_set_enable_webaudio(wk_settings, TRUE);
-    webkit_settings_set_enable_page_cache(wk_settings, TRUE);
-    webkit_settings_set_allow_file_access_from_file_urls(wk_settings, TRUE);
-    webkit_settings_set_allow_universal_access_from_file_urls(wk_settings, TRUE);
-    webkit_settings_set_hardware_acceleration_policy(wk_settings,
-        prefs.hardware_accel
-            ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS
-            : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
-    webkit_web_view_set_zoom_level(WEBKIT_WEB_VIEW(tab->webview), prefs.default_zoom);
-    webkit_settings_set_default_font_size(wk_settings, (guint32)prefs.font_size);
-    webkit_settings_set_minimum_font_size(wk_settings, (guint32)prefs.min_font_size);
+// SADECE Python'dakiler:
+webkit_settings_set_hardware_acceleration_policy(wk_settings,
+    WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+webkit_settings_set_enable_media(wk_settings, TRUE);
+webkit_settings_set_enable_webgl(wk_settings, TRUE);
+webkit_settings_set_media_playback_requires_user_gesture(wk_settings, FALSE);
+webkit_settings_set_enable_webaudio(wk_settings, TRUE);
+webkit_settings_set_enable_smooth_scrolling(wk_settings, TRUE);
+webkit_settings_set_javascript_can_open_windows_automatically(wk_settings, TRUE);
+webkit_settings_set_allow_modal_dialogs(wk_settings, TRUE);
+webkit_settings_set_allow_file_access_from_file_urls(wk_settings, TRUE);
+webkit_settings_set_allow_universal_access_from_file_urls(wk_settings, TRUE);
+
+const auto& prefs = SettingsManager::Get().Prefs();
+webkit_settings_set_enable_javascript(wk_settings, prefs.javascript_enabled);
+webkit_settings_set_enable_page_cache(wk_settings, FALSE);
+webkit_settings_set_default_font_size(wk_settings, (guint32)prefs.font_size);
+webkit_settings_set_minimum_font_size(wk_settings, (guint32)prefs.min_font_size);
+webkit_web_view_set_zoom_level(WEBKIT_WEB_VIEW(tab->webview), prefs.default_zoom);
+
+// View-source sayfaları için beyaz arka plan ve siyah yazı (sadece view-source: URL'leri için)
+WebKitUserContentManager* content_mgr = webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(tab->webview));
+const char* view_source_css = 
+    "body { background: #ffffff !important; color: #000000 !important; }"
+    "pre { background: #ffffff !important; color: #000000 !important; "
+    "font-family: 'Courier New', Consolas, monospace; font-size: 13px; "
+    "line-height: 1.5; padding: 16px; margin: 0; }";
+const char* allowlist[] = { "view-source:*", nullptr };
+WebKitUserStyleSheet* stylesheet = webkit_user_style_sheet_new(
+    view_source_css,
+    WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+    WEBKIT_USER_STYLE_LEVEL_USER,
+    allowlist,
+    nullptr
+);
+webkit_user_content_manager_add_style_sheet(content_mgr, stylesheet);
+webkit_user_style_sheet_unref(stylesheet);
+
     gtk_widget_set_hexpand(tab->webview, TRUE);
     gtk_widget_set_vexpand(tab->webview, TRUE);
     g_object_set_data(G_OBJECT(tab->webview), "tab", tab);
@@ -930,6 +896,8 @@ Tab* BrowserWindow::NewTab(const std::string& url, bool load, bool switch_to) {
     g_signal_connect(tab->webview, "context-menu",        G_CALLBACK(OnContextMenuCb),        this);
     g_signal_connect(tab->webview, "create",              G_CALLBACK(OnCreateWebViewCb),      this);
     g_signal_connect(tab->webview, "print",               G_CALLBACK(OnPrintCb),              this);
+    
+    
     g_signal_connect(tab->webview, "run-file-chooser",    G_CALLBACK(OnFileChooserCb),        this);
 
     // Stack'e ekle
@@ -1792,21 +1760,21 @@ bool BrowserWindow::OnDecidePolicy(WebKitWebView* wv,
     }
 
     // RESPONSE: İndirilebilir içerik → download'a yönlendir, boş sekme açma
-    if (type == WEBKIT_POLICY_DECISION_TYPE_RESPONSE) {
-        WebKitResponsePolicyDecision* resp = WEBKIT_RESPONSE_POLICY_DECISION(dec);
-        WebKitURIResponse* uri_resp = webkit_response_policy_decision_get_response(resp);
-        const char* resp_uri = webkit_uri_response_get_uri(uri_resp);
-        // view-source: URL'leri için download'a yönlendirme — WebKit native renderer kullanır
-        if (resp_uri && g_str_has_prefix(resp_uri, "view-source:")) {
-            webkit_policy_decision_use(dec);
-            return true;
-        }
-        if (!webkit_response_policy_decision_is_mime_type_supported(resp)) {
-            webkit_policy_decision_download(dec);
-            return true;
-        }
-        return false;
+if (type == WEBKIT_POLICY_DECISION_TYPE_RESPONSE) {
+    WebKitResponsePolicyDecision* resp = WEBKIT_RESPONSE_POLICY_DECISION(dec);
+    WebKitURIResponse* uri_resp = webkit_response_policy_decision_get_response(resp);
+    const char* resp_uri = webkit_uri_response_get_uri(uri_resp);
+
+    if (resp_uri && g_str_has_prefix(resp_uri, "view-source:")) {
+        webkit_policy_decision_use(dec);
+        return true;
     }
+    if (!webkit_response_policy_decision_is_mime_type_supported(resp)) {
+        webkit_policy_decision_download(dec);
+        return true;
+    }
+    return false;
+}
 
     if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) return false;
 
@@ -1940,22 +1908,6 @@ bool BrowserWindow::OnContextMenu(WebKitWebView* wv,
                     "Yeni Sekmede A\xc3\xa7",
                     g_variant_new_string(link_uri)));
             g_object_unref(act_tab);
-
-            // Bağlantıyı Aç — aynı sekmede (en üste gelir)
-            GSimpleAction* act_same = g_simple_action_new("ctx-open-same", G_VARIANT_TYPE_STRING);
-            g_signal_connect(act_same, "activate",
-                G_CALLBACK(+[](GSimpleAction*, GVariant* p, gpointer ud) {
-                    const char* u = g_variant_get_string(p, nullptr);
-                    auto* self = static_cast<BrowserWindow*>(ud);
-                    if (u && *u && self->active_tab_)
-                        webkit_web_view_load_uri(WEBKIT_WEB_VIEW(self->active_tab_->webview), u);
-                }), this);
-            webkit_context_menu_prepend(menu,
-                webkit_context_menu_item_new_from_gaction(
-                    G_ACTION(act_same),
-                    "Ba\xc4\x9flant\xc4\xb1y\xc4\xb1 A\xc3\xa7",
-                    g_variant_new_string(link_uri)));
-            g_object_unref(act_same);
         }
     }
 
@@ -1966,30 +1918,35 @@ bool BrowserWindow::OnContextMenu(WebKitWebView* wv,
             webkit_context_menu_append(menu, webkit_context_menu_item_new_separator());
 
         GSimpleAction* act_tr = g_simple_action_new("ctx-ai-translate", nullptr);
-        g_signal_connect(act_tr, "activate",
-            G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer ud) {
-                auto* self = static_cast<BrowserWindow*>(ud);
-                if (!self->active_tab_ || !self->active_tab_->webview) return;
-                webkit_web_view_evaluate_javascript(
-                    WEBKIT_WEB_VIEW(self->active_tab_->webview),
-                    "window.getSelection().toString()", -1,
-                    nullptr, nullptr, nullptr,
-                    [](GObject* obj, GAsyncResult* res, gpointer ud2) {
-                        auto* self2 = static_cast<BrowserWindow*>(ud2);
-                        GError* err = nullptr;
-                        JSCValue* val = webkit_web_view_evaluate_javascript_finish(
-                            WEBKIT_WEB_VIEW(obj), res, &err);
-                        if (err) { g_error_free(err); return; }
-                        char* sel_text = jsc_value_to_string(val);
-                        g_object_unref(val);
-                        if (!sel_text || sel_text[0] == '\0') { g_free(sel_text); return; }
-                        std::string prompt = std::string(
-                            "Aşağıdaki metni Türkçe'ye çevir. "
-                            "Sadece çeviriyi yaz, başka hiçbir şey ekleme:\n\n") + sel_text;
-                        g_free(sel_text);
-                        self2->ShowAiQuickPopup("Çeviri", prompt);
-                    }, self);
-            }), this);
+       g_signal_connect(act_tr, "activate",
+    G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer ud) {
+        auto* self = static_cast<BrowserWindow*>(ud);
+        if (!self->active_tab_ || !self->active_tab_->webview) return;
+        webkit_web_view_evaluate_javascript(
+            WEBKIT_WEB_VIEW(self->active_tab_->webview),
+            "window.getSelection().toString()", 
+            -1,
+            nullptr, 
+            nullptr,
+            nullptr,  // GCancellable* - bu nullptr olmalı
+            +[](GObject* obj, GAsyncResult* res, gpointer ud2) {
+                auto* self2 = static_cast<BrowserWindow*>(ud2);
+                GError* err = nullptr;
+                JSCValue* val = webkit_web_view_evaluate_javascript_finish(
+                    WEBKIT_WEB_VIEW(obj), res, &err);
+                if (err) { g_error_free(err); return; }
+                if (!val) return;
+                char* sel_text = jsc_value_to_string(val);
+                g_object_unref(val);
+                if (!sel_text || sel_text[0] == '\0') { g_free(sel_text); return; }
+                std::string prompt = std::string(
+                    "Aşağıdaki metni Türkçe'ye çevir. "
+                    "Sadece çeviriyi yaz, başka hiçbir şey ekleme:\n\n") + sel_text;
+                g_free(sel_text);
+                self2->ShowAiQuickPopup("Çeviri", prompt);
+            }, 
+            self);  // user_data
+    }), this);
         webkit_context_menu_append(menu,
             webkit_context_menu_item_new_from_gaction(
                 G_ACTION(act_tr), "Yapay Zeka ile Çevir", nullptr));
@@ -2093,25 +2050,52 @@ WebKitWebView* BrowserWindow::OnCreateWebView(WebKitWebView* source_wv,
     tab->webview = new_wv;
 
     // Aynı ayarları uygula
-    WebKitSettings* wk_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(new_wv));
-    webkit_settings_set_user_agent(wk_settings,
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-    webkit_settings_set_enable_javascript(wk_settings, TRUE);
-    webkit_settings_set_enable_media(wk_settings, TRUE);
-    webkit_settings_set_javascript_can_open_windows_automatically(wk_settings, TRUE);
-    webkit_settings_set_allow_modal_dialogs(wk_settings, TRUE);
-    webkit_settings_set_enable_smooth_scrolling(wk_settings, TRUE);
-    webkit_settings_set_media_playback_requires_user_gesture(wk_settings, FALSE);
-    webkit_settings_set_enable_webgl(wk_settings, TRUE);
-    webkit_settings_set_enable_webaudio(wk_settings, TRUE);
-    webkit_settings_set_enable_page_cache(wk_settings, TRUE);
-    webkit_settings_set_hardware_acceleration_policy(
-        wk_settings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+    WebKitSettings* wk_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(tab->webview));
+
+// UA YOK — varsayılan WebKit UA kullanılacak
+
+const auto& prefs = SettingsManager::Get().Prefs();
+webkit_settings_set_enable_javascript(wk_settings, prefs.javascript_enabled);
+webkit_settings_set_enable_media(wk_settings, TRUE);
+webkit_settings_set_javascript_can_open_windows_automatically(wk_settings, TRUE);
+webkit_settings_set_allow_modal_dialogs(wk_settings, TRUE);
+webkit_settings_set_enable_smooth_scrolling(wk_settings, TRUE);
+webkit_settings_set_media_playback_requires_user_gesture(wk_settings, FALSE);
+webkit_settings_set_enable_webgl(wk_settings, TRUE);
+webkit_settings_set_enable_webaudio(wk_settings, TRUE);
+webkit_settings_set_enable_page_cache(wk_settings, FALSE);
+webkit_settings_set_allow_file_access_from_file_urls(wk_settings, TRUE);
+webkit_settings_set_allow_universal_access_from_file_urls(wk_settings, TRUE);
+webkit_settings_set_hardware_acceleration_policy(wk_settings,
+    WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
+webkit_web_view_set_zoom_level(WEBKIT_WEB_VIEW(tab->webview), prefs.default_zoom);
+webkit_settings_set_default_font_size(wk_settings, (guint32)prefs.font_size);
+webkit_settings_set_minimum_font_size(wk_settings, (guint32)prefs.min_font_size);
+webkit_settings_set_media_playback_allows_inline(wk_settings, TRUE);
+
+// View-source sayfaları için beyaz arka plan ve siyah yazı (sadece view-source: URL'leri için)
+WebKitUserContentManager* content_mgr = webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(tab->webview));
+const char* view_source_css = 
+    "body { background: #ffffff !important; color: #000000 !important; }"
+    "pre { background: #ffffff !important; color: #000000 !important; "
+    "font-family: 'Courier New', Consolas, monospace; font-size: 13px; "
+    "line-height: 1.5; padding: 16px; margin: 0; }";
+const char* allowlist[] = { "view-source:*", nullptr };
+WebKitUserStyleSheet* stylesheet = webkit_user_style_sheet_new(
+    view_source_css,
+    WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+    WEBKIT_USER_STYLE_LEVEL_USER,
+    allowlist,
+    nullptr
+);
+webkit_user_content_manager_add_style_sheet(content_mgr, stylesheet);
+webkit_user_style_sheet_unref(stylesheet);
 
     gtk_widget_set_hexpand(new_wv, TRUE);
     gtk_widget_set_vexpand(new_wv, TRUE);
     g_object_set_data(G_OBJECT(new_wv), "tab", tab);
+    // Compositor için hardware accel açık kalsın, sadece media decode kapalı
+    g_setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "0", FALSE); 
 
     g_signal_connect(new_wv, "load-changed",         G_CALLBACK(OnLoadChangedCb),        this);
     g_signal_connect(new_wv, "notify::uri",          G_CALLBACK(OnUriChangedCb),         this);
@@ -2269,23 +2253,44 @@ gboolean BrowserWindow::OnFileChooser(WebKitWebView*, WebKitFileChooserRequest* 
     gboolean allow_multiple = webkit_file_chooser_request_get_select_multiple(req);
 
     GtkFileDialog* dlg = gtk_file_dialog_new();
-    gtk_file_dialog_set_title(dlg, allow_multiple ? "Dosya Seç" : "Dosya Seç");
+    gtk_file_dialog_set_title(dlg, "Dosya Seç");
     gtk_file_dialog_set_modal(dlg, TRUE);
 
     // MIME filtrelerini WebKit'ten al
     const gchar* const* mime_types = webkit_file_chooser_request_get_mime_types(req);
+
+    // Filtreler: "İzin verilenler" + "Tüm Dosyalar"
+    GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+
     if (mime_types && mime_types[0]) {
-        GtkFileFilter* filter = gtk_file_filter_new();
-        gtk_file_filter_set_name(filter, "İzin verilen dosyalar");
+        // Sitenin istediği MIME türleri
+        GtkFileFilter* site_filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(site_filter, "Önerilen dosyalar");
         for (int i = 0; mime_types[i]; ++i)
-            gtk_file_filter_add_mime_type(filter, mime_types[i]);
-        GListStore* filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
-        g_list_store_append(filters, filter);
-        gtk_file_dialog_set_filters(dlg, G_LIST_MODEL(filters));
-        gtk_file_dialog_set_default_filter(dlg, filter);
-        g_object_unref(filters);
-        g_object_unref(filter);
+            gtk_file_filter_add_mime_type(site_filter, mime_types[i]);
+        g_list_store_append(filters, site_filter);
+        g_object_unref(site_filter);
     }
+
+    // Her zaman "Tüm Dosyalar" filtresini ekle — kullanıcı istediğini seçebilsin
+    GtkFileFilter* all_filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(all_filter, "Tüm Dosyalar");
+    gtk_file_filter_add_pattern(all_filter, "*");
+    g_list_store_append(filters, all_filter);
+
+    gtk_file_dialog_set_filters(dlg, G_LIST_MODEL(filters));
+
+    // Varsayılan filtre: eğer MIME kısıtı yoksa tüm dosyalar, varsa önerilen
+    if (mime_types && mime_types[0]) {
+        GtkFileFilter* def = GTK_FILE_FILTER(g_list_model_get_item(G_LIST_MODEL(filters), 0));
+        gtk_file_dialog_set_default_filter(dlg, def);
+        g_object_unref(def);
+    } else {
+        gtk_file_dialog_set_default_filter(dlg, all_filter);
+    }
+
+    g_object_unref(all_filter);
+    g_object_unref(filters);
 
     struct Ctx {
         WebKitFileChooserRequest* req;
@@ -3401,13 +3406,13 @@ var MODELS = {
                {v:'claude-haiku-3-5',l:'Claude Haiku 3.5',tk:'~200k ctx, hızlı ve ekonomik'}],
   deepseek:   [{v:'deepseek-chat',l:'DeepSeek Chat (V3)',tk:'~64k ctx, ekonomik'},
                {v:'deepseek-reasoner',l:'DeepSeek Reasoner (R1)',tk:'~64k ctx, akıl yürütme'}],
-  ferman:     [{v:'qwen2.5:7b',l:'Qwen 2.5 7B',tk:'~32k ctx, yerel model, ücretsiz'}],
+  ferman:     [{v:'ferman3.5',l:'Ferman 3.5',tk:'~32k ctx, yerel model, uygun maliyetli'}],
   groq:       [{v:'llama-3.3-70b-versatile',l:'Llama 3.3 70B',tk:'~128k ctx, çok hızlı'},
                {v:'llama-3.1-8b-instant',l:'Llama 3.1 8B Instant',tk:'~128k ctx, ultra hızlı'},
                {v:'mixtral-8x7b-32768',l:'Mixtral 8x7B',tk:'~32k ctx'},
                {v:'gemma2-9b-it',l:'Gemma 2 9B',tk:'~8k ctx'}],
   openrouter: [{v:'meta-llama/llama-3.3-70b-instruct',l:'Llama 3.3 70B',tk:'Ücretsiz tier mevcut'},
-               {v:'google/gemini-2.0-flash-exp:free',l:'Gemini 2.0 Flash',tk:'Ücretsiz'},
+               {v:'google/gemini-2.0-flash-exp:free',l:'Gemini 2.0 Flash',tk:'ygun maliyetli'},
                {v:'deepseek/deepseek-chat',l:'DeepSeek Chat',tk:'Ekonomik'},
                {v:'anthropic/claude-3.5-sonnet',l:'Claude 3.5 Sonnet',tk:'Pahalı'}],
   other:      []
@@ -4246,6 +4251,7 @@ border-radius:6px;font-weight:600;font-size:.82rem;padding:2px 10px;margin-left:
 padding:9px 14px;margin:4px 8px 4px 48px;color:#1a3a5c;font-size:.88rem;line-height:1.5}
 .ai-bubble-ai{background:#f3f3f3;border-radius:14px 14px 14px 4px;
 padding:9px 14px;margin:4px 48px 4px 8px;color:#222;font-size:.88rem;line-height:1.5}
+.ai-bubble-ai.loading{min-height:40px;color:#999;font-style:italic}
 .ai-input-area{background:#fafafa;border-top:1px solid #e0e0e0;padding:8px}
 .ai-input-view{background:#fff;border:1px solid #d0d0d0;border-radius:8px;
 color:#222;font-size:.88rem;padding:6px;caret-color:#333}
@@ -4857,7 +4863,6 @@ void BrowserWindow::ShowAiQuickPopup(const std::string& title,
     provider = AiAgent::DetectProvider(api_key);
 
     if (api_key.empty()) {
-        // Ajan yoksa popup ile uyar
         GtkAlertDialog* dlg = gtk_alert_dialog_new("%s",
             "AI özelliği için önce Ayarlar > Yapay Zeka bölümünden bir ajan ekleyin.");
         gtk_alert_dialog_show(dlg, GTK_WINDOW(window_));
@@ -4865,7 +4870,7 @@ void BrowserWindow::ShowAiQuickPopup(const std::string& title,
         return;
     }
 
-    // Popup pencere: başlık + yükleniyor label → cevap gelince güncellenir
+    // Popup pencere
     GtkWidget* win = gtk_window_new();
     gtk_window_set_title(GTK_WINDOW(win), title.c_str());
     gtk_window_set_default_size(GTK_WINDOW(win), 520, 400);
@@ -4876,14 +4881,12 @@ void BrowserWindow::ShowAiQuickPopup(const std::string& title,
     gtk_widget_set_margin_start(vbox, 16); gtk_widget_set_margin_end(vbox, 16);
     gtk_widget_set_margin_top(vbox, 12);   gtk_widget_set_margin_bottom(vbox, 12);
 
-    // Başlık
     GtkWidget* title_lbl = gtk_label_new(title.c_str());
     gtk_widget_add_css_class(title_lbl, "title-4");
     gtk_widget_set_halign(title_lbl, GTK_ALIGN_START);
     gtk_box_append(GTK_BOX(vbox), title_lbl);
     gtk_box_append(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
 
-    // Scroll + text view (cevap buraya yazılacak)
     GtkWidget* scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
         GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
@@ -4899,7 +4902,6 @@ void BrowserWindow::ShowAiQuickPopup(const std::string& title,
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), text_view);
     gtk_box_append(GTK_BOX(vbox), scroll);
 
-    // Kapat butonu
     GtkWidget* close_btn = gtk_button_new_with_label("Kapat");
     gtk_widget_set_halign(close_btn, GTK_ALIGN_END);
     g_signal_connect(close_btn, "clicked",
@@ -4911,37 +4913,67 @@ void BrowserWindow::ShowAiQuickPopup(const std::string& title,
     gtk_window_set_child(GTK_WINDOW(win), vbox);
     gtk_window_present(GTK_WINDOW(win));
 
-    // AI isteği gönder — tmp_chat heap'te, callback bitince silinir
-    struct QuickCtx {
-        GtkTextBuffer* buf;
-        GtkWidget*     win;  // weak ref ile sıfırlanır
-        AiChat         chat; // referans kaybolmasın
-        std::string    result;
-    };
-    auto* ctx = new QuickCtx{};
-    ctx->buf  = buf;
-    ctx->win  = win;
-    ctx->chat.provider = provider;
-    ctx->chat.model    = model;
+    // Accumulated text için string
+    auto accumulated = std::make_shared<std::string>();
+    
+    // Chat nesnesini HEAP'te oluştur
+    auto chat_ptr = std::make_shared<AiChat>();
+    chat_ptr->provider = provider;
+    chat_ptr->model    = model;
     AiMessage qmsg;
     qmsg.role    = "user";
     qmsg.content = prompt;
-    ctx->chat.messages.push_back(qmsg);
+    chat_ptr->messages.push_back(qmsg);
 
-    g_object_add_weak_pointer(G_OBJECT(win), (gpointer*)&ctx->win);
+    // Helper struct for g_idle_add
+    struct IdleData {
+        GtkWidget* win;
+        GtkTextBuffer* buf;
+        std::string text;
+    };
 
     AiManager::Get().SendMessage(
-        ctx->chat, provider, model, api_key, api_url,
-        [ctx](const std::string& content, bool /*done*/, const std::string& err) {
-            ctx->result = err.empty() ? content : ("⚠ Hata: " + err);
-            // GTK çağrıları main thread'de yap
-            g_idle_add([](gpointer ud) -> gboolean {
-                auto* c = static_cast<QuickCtx*>(ud);
-                if (c->win)
-                    gtk_text_buffer_set_text(c->buf, c->result.c_str(), -1);
-                delete c;
-                return G_SOURCE_REMOVE;
-            }, ctx);
+        *chat_ptr,
+        provider, model, api_key, api_url,
+        [win, buf, accumulated, chat_ptr](const std::string& content, bool done, const std::string& err) {
+            if (!GTK_IS_WINDOW(win)) return;
+            
+            if (!err.empty()) {
+                *accumulated = "⚠ Hata: " + err;
+                auto* data = new IdleData{win, buf, *accumulated};
+                g_idle_add([](gpointer ud) -> gboolean {
+                    auto* data = static_cast<IdleData*>(ud);
+                    if (GTK_IS_WINDOW(data->win) && GTK_IS_TEXT_BUFFER(data->buf)) {
+                        gtk_text_buffer_set_text(data->buf, data->text.c_str(), -1);
+                    }
+                    delete data;
+                    return G_SOURCE_REMOVE;
+                }, data);
+                return;
+            }
+
+            if (!done) {
+                *accumulated += content;
+                auto* data = new IdleData{win, buf, *accumulated};
+                g_idle_add([](gpointer ud) -> gboolean {
+                    auto* data = static_cast<IdleData*>(ud);
+                    if (GTK_IS_WINDOW(data->win) && GTK_IS_TEXT_BUFFER(data->buf)) {
+                        gtk_text_buffer_set_text(data->buf, data->text.c_str(), -1);
+                    }
+                    delete data;
+                    return G_SOURCE_REMOVE;
+                }, data);
+            } else {
+                auto* data = new IdleData{win, buf, *accumulated};
+                g_idle_add([](gpointer ud) -> gboolean {
+                    auto* data = static_cast<IdleData*>(ud);
+                    if (GTK_IS_WINDOW(data->win) && GTK_IS_TEXT_BUFFER(data->buf)) {
+                        gtk_text_buffer_set_text(data->buf, data->text.c_str(), -1);
+                    }
+                    delete data;
+                    return G_SOURCE_REMOVE;
+                }, data);
+            }
         });
 }
 
@@ -5494,12 +5526,13 @@ void BrowserWindow::DoSendAiMessage(const std::string& input,
     ShowAiLoading(true);
 
     // Streaming bubble: önceden boş bir asistan balonu oluştur, chunk'lar buraya eklenir
-    GtkWidget* stream_bubble = gtk_label_new("");
+    GtkWidget* stream_bubble = gtk_label_new("⋯");  // Typing indicator
     gtk_label_set_wrap(GTK_LABEL(stream_bubble), TRUE);
     gtk_label_set_wrap_mode(GTK_LABEL(stream_bubble), PANGO_WRAP_WORD_CHAR);
     gtk_label_set_selectable(GTK_LABEL(stream_bubble), TRUE);
     gtk_label_set_xalign(GTK_LABEL(stream_bubble), 0.0f);
     gtk_widget_add_css_class(stream_bubble, "ai-bubble-ai");
+    gtk_widget_add_css_class(stream_bubble, "loading");  // Yükleme animasyonu
     gtk_widget_set_halign(stream_bubble, GTK_ALIGN_FILL);
     gtk_box_append(GTK_BOX(ai_chat_box_), stream_bubble);
     g_idle_add([](gpointer ud) -> gboolean {
@@ -5508,6 +5541,23 @@ void BrowserWindow::DoSendAiMessage(const std::string& input,
         gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
         return G_SOURCE_REMOVE;
     }, ai_chat_scroll_);
+
+    // Animasyon için typing indicator timer
+    struct AnimData { GtkWidget* label; guint* timer_id; int* frame; };
+    auto* anim_data = new AnimData{stream_bubble, new guint(0), new int(0)};
+    *anim_data->timer_id = g_timeout_add(400, [](gpointer ud) -> gboolean {
+        auto* data = static_cast<AnimData*>(ud);
+        if (!GTK_IS_LABEL(data->label) || !gtk_widget_has_css_class(data->label, "loading")) {
+            delete data->timer_id;
+            delete data->frame;
+            delete data;
+            return G_SOURCE_REMOVE;
+        }
+        const char* frames[] = {"⋯", "⋯ ", "⋯  "};
+        gtk_label_set_text(GTK_LABEL(data->label), frames[*data->frame % 3]);
+        (*data->frame)++;
+        return G_SOURCE_CONTINUE;
+    }, anim_data);
 
     // Birikmiş ham metin (markup öncesi)
     auto* accumulated = new std::string();
@@ -5527,6 +5577,10 @@ void BrowserWindow::DoSendAiMessage(const std::string& input,
                 *accumulated += content;
                 std::string markup = md_to_pango(*accumulated);
                 gtk_label_set_markup(GTK_LABEL(stream_bubble), markup.c_str());
+                // İlk chunk geldiğinde loading animasyonunu kaldır
+                if (gtk_widget_has_css_class(stream_bubble, "loading")) {
+                    gtk_widget_remove_css_class(stream_bubble, "loading");
+                }
                 // Scroll aşağı (layout sonrası)
                 if (ai_chat_scroll_) {
                     GtkWidget* scroll_widget = ai_chat_scroll_;

@@ -114,21 +114,17 @@ void SessionManager::SetupCdnScheme() {
 void SessionManager::Init() {
     EnsureDirs();
 
-    // Kalıcı network session oluştur
-    session_ = webkit_network_session_new(data_dir_.c_str(), cache_dir_.c_str());
-
+    // TEST: özel session yerine varsayılan kullan
+    session_ = webkit_network_session_get_default();
+    
     // Favicon DB
     WebKitWebsiteDataManager* dm =
         webkit_network_session_get_website_data_manager(session_);
     webkit_website_data_manager_set_favicons_enabled(dm, TRUE);
 
-    // ITP (Intelligent Tracking Prevention) kapat — site uyumluluğu için
     webkit_network_session_set_itp_enabled(session_, FALSE);
-
-    // Kalıcı kimlik bilgileri (login oturumları)
     webkit_network_session_set_persistent_credential_storage_enabled(session_, TRUE);
 
-    // Cookie kalıcılığı
     WebKitCookieManager* cookie_mgr =
         webkit_network_session_get_cookie_manager(session_);
     std::string cookie_file = data_dir_ + "/cookies.sqlite";
@@ -140,11 +136,14 @@ void SessionManager::Init() {
         cookie_mgr,
         WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
 
-    // Web context (cache modeli)
+    // Her sekme için ayrı process yerine paylaşımlı process kullan
+    // 42 process → 2-3 process'e düşer
     context_ = webkit_web_context_get_default();
+    
+    // Kalıcı network session oluştur
+    session_ = webkit_network_session_new(data_dir_.c_str(), cache_dir_.c_str());
     webkit_web_context_set_cache_model(context_, WEBKIT_CACHE_MODEL_WEB_BROWSER);
 
-    // CDN URI şeması kaydet
     SetupCdnScheme();
 }
 
