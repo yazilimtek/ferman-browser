@@ -33,7 +33,7 @@ pkg_check_modules(WEBKIT  REQUIRED ${WEBKIT_PKG})
 pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 pkg_check_modules(SOUP    REQUIRED libsoup-3.0)
 pkg_check_modules(POPPLER         poppler-glib)
-pkg_check_modules(LIBZIP          libzip)
+pkg_check_modules(LIBZIP          libzip>=1.5)
 
 set(SOURCES
     src/main.cpp
